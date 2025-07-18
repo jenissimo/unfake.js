@@ -1,0 +1,38 @@
+{
+  "name": "unfake.js",
+  "version": "0.1.0",
+  "description": "Convert AI-generated pseudo-pixel art to clean pixel art and pseudo-vectors to proper vectors",
+  "main": "dist/unfake.js",
+  "module": "dist/unfake.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "lib"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pixel-art",
+    "vectorization",
+    "image-processing",
+    "opencv",
+    "svg",
+    "png"
+  ],
+  "author": "Evgeniy Smirnov",
+  "license": "MIT",
+  "dependencies": {
+    "image-q": "^4.0.0",
+    "upng-js": "^2.1.0",
+    "potrace-wasm": "^1.0.4"
+  },
+  "devDependencies": {
+    "rollup": "^4.45.1",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "rollup-plugin-terser": "^0.4.4",
+    "rollup-plugin-dts": "^6.2.1"
+  }
+} 

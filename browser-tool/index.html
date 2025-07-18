@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>unfake.js — AI to Pixel Art & Vector Converter</title>
+    
+    <!-- OpenCV.js -->
+    <script>
+        // Define onOpenCvReady before OpenCV loads
+        window.onOpenCvReady = function() {
+            console.log('OpenCV.js is ready');
+            if (window.appState) {
+                window.appState.opencvReady = true;
+                if (window.updateUI) window.updateUI();
+            }
+        };
+    </script>
+    <script async src="https://docs.opencv.org/4.11.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    
+    <!-- Pako.js (required by UPNG.js) -->
+    <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+    
+    <!-- UPNG.js (load as global script) -->
+    <script src="https://unpkg.com/upng-js@2.1.0/UPNG.js"></script>
+        
+    <!-- Dependencies for unfake.js (ES modules) -->
+    <script type="importmap">
+    {
+      "imports": {
+        "svd": "https://unpkg.com/svd-js@1.1.1/build-es/svd.js",
+        "tweakpane": "https://unpkg.com/tweakpane@4.0.5/dist/tweakpane.min.js",
+        "image-q": "https://unpkg.com/image-q@4.0.0/dist/esm/image-q.mjs",
+        "potrace-wasm": "https://unpkg.com/esm-potrace-wasm@0.4.1/dist/index.js",
+        "./utils.js": "../lib/utils.js",
+        "./pixel.js": "../lib/pixel.js",
+        "../lib/utils.js": "../lib/utils.js",
+        "../lib/pixel.js": "../lib/pixel.js",
+        "../lib/vector.js": "../lib/vector.js"
+      }
+    }
+    </script>
+    
+    <!-- Custom styles -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <h1>unfake.js</h1>
+                <div class="header-controls">
+                    <div class="mode-switch">
+                        <button class="mode-btn active" data-mode="pixel">Pixel Art</button>
+                        <button class="mode-btn" data-mode="vector">Vector</button>
+                    </div>
+                    <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+                        🌙
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <!-- Settings Panel -->
+            <div id="tweakpane-container"></div>
+
+            <!-- Original Image -->
+            <section class="image-panel">
+                <div class="panel-header">
+                    <h2>Original</h2>
+                </div>
+                <div class="image-container">
+                    <!-- Upload Area -->
+                    <div id="upload-area" class="upload-area">
+                        <div class="upload-content">
+                            <div class="upload-icon">📁</div>
+                            <p>Drag & drop image here</p>
+                            <p>or click to select file</p>
+                            <p>or paste from clipboard (Ctrl+V)</p>
+                            <p class="upload-hint">Supported: PNG, JPG, JPEG, WebP</p>
+                            <p class="upload-hint">Max size: 10MB</p>
+                        </div>
+                        <input type="file" id="file-input" accept="image/*" hidden>
+                    </div>
+                    
+                    <!-- Image Display -->
+                    <div id="image-display" class="image-display" style="display: none;">
+                        <div class="image-wrapper">
+                            <img id="original-image" alt="Original image">
+                            <button id="reset-btn" class="reset-btn" title="Remove image">×</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Process Button -->
+                    <button id="process-btn" class="process-btn" style="display: none;">
+                        <span class="btn-text">Process → Pixel Art</span>
+                        <span class="btn-loading" style="display: none;">Processing...</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Result -->
+            <section class="result-panel">
+                <div class="panel-header">
+                    <h2>Result</h2>
+                </div>
+                <div class="result-container">
+                    <div id="result-area" class="result-area">
+                        <div class="placeholder">
+                            <div class="placeholder-icon">✨</div>
+                            <p>Upload an image and click "Process"</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Result Settings -->
+                    <div id="result-tweakpane-container"></div>
+                    
+                    <!-- Action Buttons -->
+                    <div class="action-buttons" style="display: none;">
+                        <button id="copy-btn" class="copy-btn">
+                            Copy to Clipboard
+                        </button>
+                        <button id="download-btn" class="download-btn">
+                            Download PNG
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- App script -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html> 
