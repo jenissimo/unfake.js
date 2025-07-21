@@ -15,7 +15,12 @@ import {
   median,
   mode,
   mean,
-  logger
+  logger,
+  dominantOrMean,
+  finalizePixels,
+  encodePng,
+  getPaletteFromImage,
+  downscaleBlock
 } from './utils.js';
 
 // Re-export all functions
@@ -33,7 +38,12 @@ export {
   median,
   mode,
   mean,
-  logger
+  logger,
+  dominantOrMean,
+  finalizePixels,
+  encodePng,
+  getPaletteFromImage,
+  downscaleBlock
 };
 
 // Default export with all functions
@@ -50,6 +60,11 @@ export default {
     median,
     mode,
     mean,
-    logger
+    logger,
+    dominantOrMean,
+    finalizePixels,
+    encodePng,
+    getPaletteFromImage,
+    downscaleBlock
   }
 }; 

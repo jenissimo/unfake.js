@@ -6,23 +6,14 @@
     <title>unfake.js — AI to Pixel Art & Vector Converter</title>
     
     <!-- OpenCV.js -->
-    <script>
-        // Define onOpenCvReady before OpenCV loads
-        window.onOpenCvReady = function() {
-            console.log('OpenCV.js is ready');
-            if (window.appState) {
-                window.appState.opencvReady = true;
-                if (window.updateUI) window.updateUI();
-            }
-        };
-    </script>
-    <script async src="https://docs.opencv.org/4.11.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <script async src="https://docs.opencv.org/4.11.0/opencv.js" type="text/javascript"></script>
     
     <!-- Pako.js (required by UPNG.js) -->
     <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
     
     <!-- UPNG.js (load as global script) -->
     <script src="https://unpkg.com/upng-js@2.1.0/UPNG.js"></script>
+    <script src="https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
         
     <!-- Dependencies for unfake.js (ES modules) -->
     <script type="importmap">
@@ -32,8 +23,6 @@
         "tweakpane": "https://unpkg.com/tweakpane@4.0.5/dist/tweakpane.min.js",
         "image-q": "https://unpkg.com/image-q@4.0.0/dist/esm/image-q.mjs",
         "potrace-wasm": "https://unpkg.com/esm-potrace-wasm@0.4.1/dist/index.js",
-        "./utils.js": "../lib/utils.js",
-        "./pixel.js": "../lib/pixel.js",
         "../lib/utils.js": "../lib/utils.js",
         "../lib/pixel.js": "../lib/pixel.js",
         "../lib/vector.js": "../lib/vector.js"
@@ -49,12 +38,15 @@
         <!-- Header -->
         <header class="app-header">
             <div class="header-content">
-                <h1>unfake.js</h1>
+                <h1 id="main-title">unfake.js - Pixel Art Mode</h1>
                 <div class="header-controls">
                     <div class="mode-switch">
                         <button class="mode-btn active" data-mode="pixel">Pixel Art</button>
                         <button class="mode-btn" data-mode="vector">Vector</button>
                     </div>
+                    <button id="magnifier-toggle" class="magnifier-toggle" title="Toggle magnifier">
+                        🔍
+                    </button>
                     <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
                         🌙
                     </button>
@@ -96,7 +88,7 @@
                     
                     <!-- Process Button -->
                     <button id="process-btn" class="process-btn" style="display: none;">
-                        <span class="btn-text">Process → Pixel Art</span>
+                        <span class="btn-text">✨ Process</span>
                         <span class="btn-loading" style="display: none;">Processing...</span>
                     </button>
                 </div>
