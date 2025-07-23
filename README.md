@@ -42,9 +42,35 @@ The project includes a browser-based tool (`/browser-tool`) that provides a user
 ## How to Use
 
 ### Running the Browser Tool Locally
-1.  You don't need a local server. Simply open the `browser-tool/index.html` file in a modern web browser (like Chrome or Firefox).
-2.  The tool loads all dependencies (OpenCV.js, ImageTracer.js, etc.) from a CDN via an `importmap`.
-3.  Upload an image and start experimenting with the settings.
+
+> ⚠️ **You need a local server!**
+>
+> Modern browsers do not allow ES module imports (importmap, type="module") from local files (`file://`). To use the browser tool, you must run it via a local http(s) server.
+
+**Quick ways to start a server:**
+
+- **Python 3.x** (from the project root):
+  ```sh
+  python -m http.server 8080
+  # or
+  python3 -m http.server 8080
+  ```
+  Then open: http://localhost:8080/browser-tool/
+
+- **Node.js (http-server):**
+  ```sh
+  npx http-server -p 8080
+  ```
+  Then open: http://localhost:8080/browser-tool/
+
+- **VSCode Live Server:**
+  Click "Go Live" at the bottom of VSCode and select the `browser-tool` folder.
+
+---
+
+1. Start a local server using one of the methods above.
+2. Open `http://localhost:8080/browser-tool/` in your browser (or the port you chose).
+3. Upload an image, tweak the settings, enjoy!
 
 ### Using the Library (`unfake.js`) in Your Own Project
 
