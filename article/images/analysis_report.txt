@@ -1,0 +1,12 @@
+Scale detected: 43
+Optimal crop offset: x=23, y=22
+Cropped image size: 989 x 989
+Original palette size: 25116 colors
+Quantized palette size: 16 colors
+Blocks: 23 x 23
+Demo block dominant color: #09a67a (50.1%)
+Fallback to mean color: No
+Full image peaks found: 14
+Full image spacings analyzed: 13
+Full image mode spacing: 43 pixels (3 occurrences)
+Full image spacing range: 39-90 pixels

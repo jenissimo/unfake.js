@@ -148,6 +148,7 @@ function cacheElements() {
         actionButtons: document.querySelector('.action-buttons'),
         copyBtn: document.getElementById('copy-btn'),
         downloadBtn: document.getElementById('download-btn'),
+        downloadComparisonBtn: document.getElementById('download-comparison-btn'),
         
         // Settings
         tweakpaneContainer: document.getElementById('tweakpane-container'),
@@ -854,6 +855,9 @@ function bindEvents() {
     // Action buttons
     elements.copyBtn.addEventListener('click', handleCopy);
     elements.downloadBtn.addEventListener('click', handleDownload);
+    if (elements.downloadComparisonBtn) {
+        elements.downloadComparisonBtn.addEventListener('click', handleDownloadComparison);
+    }
     
     // Paste from clipboard
     document.addEventListener('paste', handlePaste);
@@ -1547,6 +1551,147 @@ function downloadVector() {
     URL.revokeObjectURL(url);
 }
 
+// Handle download comparison
+async function handleDownloadComparison() {
+    if (!appState.originalImage || !appState.processedImage[appState.mode]) return;
+    const originalImg = appState.originalImage;
+    let resultCanvas;
+    let scale = 10;
+    let outW, outH;
+    // --- Prepare upscaled result ---
+    if (appState.mode === 'pixel') {
+        const src = appState.processedImage.pixel.canvas;
+        resultCanvas = document.createElement('canvas');
+        resultCanvas.width = src.width * scale;
+        resultCanvas.height = src.height * scale;
+        const ctx = resultCanvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
+        ctx.drawImage(src, 0, 0, resultCanvas.width, resultCanvas.height);
+        // Draw grid
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= src.width; ++x) {
+            ctx.beginPath();
+            ctx.moveTo(x * scale + 0.5, 0);
+            ctx.lineTo(x * scale + 0.5, resultCanvas.height);
+            ctx.stroke();
+        }
+        for (let y = 0; y <= src.height; ++y) {
+            ctx.beginPath();
+            ctx.moveTo(0, y * scale + 0.5);
+            ctx.lineTo(resultCanvas.width, y * scale + 0.5);
+            ctx.stroke();
+        }
+        ctx.restore();
+    } else {
+        // Render SVG to canvas, then upscale
+        const svg = appState.processedImage.vector.svg;
+        const svgBlob = new Blob([svg], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new window.Image();
+        await new Promise((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = reject;
+            img.src = url;
+        });
+        const base = document.createElement('canvas');
+        base.width = img.width;
+        base.height = img.height;
+        base.getContext('2d').drawImage(img, 0, 0);
+        resultCanvas = document.createElement('canvas');
+        resultCanvas.width = img.width * scale;
+        resultCanvas.height = img.height * scale;
+        const ctx = resultCanvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
+        ctx.drawImage(base, 0, 0, resultCanvas.width, resultCanvas.height);
+        URL.revokeObjectURL(url);
+        // Для вектора сетку не рисуем
+    }
+    // --- Prepare upscaled original to match result size ---
+    const origW = originalImg.naturalWidth, origH = originalImg.naturalHeight;
+    const targetW = resultCanvas.width, targetH = resultCanvas.height;
+    // Считаем aspect ratio
+    const origAspect = origW / origH;
+    const targetAspect = targetW / targetH;
+    let drawW, drawH;
+    if (origAspect > targetAspect) {
+        drawW = targetW;
+        drawH = Math.round(targetW / origAspect);
+    } else {
+        drawH = targetH;
+        drawW = Math.round(targetH * origAspect);
+    }
+    const upOrig = document.createElement('canvas');
+    upOrig.width = targetW;
+    upOrig.height = targetH;
+    const upOrigCtx = upOrig.getContext('2d');
+    upOrigCtx.imageSmoothingEnabled = false;
+    upOrigCtx.fillStyle = '#fff';
+    upOrigCtx.fillRect(0, 0, upOrig.width, upOrig.height);
+    // Центрируем
+    const dx = Math.floor((targetW - drawW) / 2);
+    const dy = Math.floor((targetH - drawH) / 2);
+    upOrigCtx.drawImage(originalImg, 0, 0, origW, origH, dx, dy, drawW, drawH);
+    // --- Prepare settings block ---
+    const settings = window.appSettings;
+    const defaultSettings = getDefaultSettings(appState.mode);
+    const diff = Object.entries(settings)
+        .filter(([k, v]) => defaultSettings[k] !== undefined && v !== defaultSettings[k])
+        .map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
+    const fontSize = 20;
+    const padding = 20;
+    const lineHeight = fontSize + 8;
+    const lines = diff.length ? diff : ['No changes from default'];
+    const settingsW = 420;
+    const settingsH = Math.max(upOrig.height, resultCanvas.height, padding * 2 + (lines.length + 1) * lineHeight);
+    const settingsBlock = document.createElement('canvas');
+    settingsBlock.width = settingsW;
+    settingsBlock.height = settingsH;
+    const ctx = settingsBlock.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, settingsBlock.width, settingsBlock.height);
+    ctx.fillStyle = '#222';
+    ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+    ctx.fillText('Changed Settings:', padding, padding + fontSize);
+    ctx.font = `${fontSize}px Arial, sans-serif`;
+    lines.forEach((line, i) => {
+        ctx.fillText(line, padding, padding + fontSize + (i + 1) * lineHeight);
+    });
+    // --- Compose final canvas ---
+    outW = upOrig.width + resultCanvas.width + settingsW;
+    outH = Math.max(upOrig.height, resultCanvas.height, settingsBlock.height);
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = outW;
+    outCanvas.height = outH;
+    const outCtx = outCanvas.getContext('2d');
+    outCtx.fillStyle = '#fff';
+    outCtx.fillRect(0, 0, outW, outH);
+    // Draw columns
+    outCtx.drawImage(upOrig, 0, 0);
+    outCtx.drawImage(resultCanvas, upOrig.width, 0);
+    outCtx.drawImage(settingsBlock, upOrig.width + resultCanvas.width, 0);
+    // Labels
+    outCtx.font = 'bold 28px Arial, sans-serif';
+    outCtx.fillStyle = '#222';
+    outCtx.textAlign = 'center';
+    outCtx.fillText('Original', upOrig.width / 2, 40);
+    outCtx.fillText('Result', upOrig.width + resultCanvas.width / 2, 40);
+    //outCtx.fillText('Settings', upOrig.width + resultCanvas.width + settingsW / 2, 40);
+    // Download
+    outCanvas.toBlob((blob) => {
+        const link = document.createElement('a');
+        link.download = 'unfake-comparison.png';
+        link.href = URL.createObjectURL(blob);
+        link.click();
+        URL.revokeObjectURL(link.href);
+    }, 'image/png');
+}
+
 // Set processing state
 function setProcessingState(processing) {
     appState.isProcessing = processing;
@@ -1598,6 +1743,11 @@ function updateUI() {
             </div>
         `;
     }
+    if (appState.processedImage[appState.mode]) {
+        elements.downloadComparisonBtn.style.display = 'inline-block';
+    } else {
+        elements.downloadComparisonBtn.style.display = 'none';
+    }
 }
 
 function clearResultArea() {
@@ -1624,5 +1774,52 @@ function updateMainTitle() {
         titleEl.textContent = 'unfake.js - Pixel Art Mode';
     } else {
         titleEl.textContent = 'unfake.js - Vectorize Mode';
+    }
+} 
+
+function getDefaultSettings(mode) {
+    // Минималистично: только ключи, которые реально есть в settings
+    if (mode === 'pixel') {
+        return {
+            maxColors: 16,
+            snapGrid: true,
+            gridDetectionAlgorithm: 'auto-tiled',
+            downscaleMethod: 'dominant',
+            domMeanThreshold: 0.05,
+            cleanupMorph: true,
+            cleanupJaggy: true,
+            autoPixelSize: true,
+            pixelSize: 4,
+            alphaThreshold: 128,
+            enableAlphaBinarization: true
+        };
+    } else {
+        return {
+            preProcess: true,
+            preProcessFilter: 'bilateral',
+            preProcessValue: 30,
+            preProcessMorphology: false,
+            quantize: true,
+            quantizeAuto: true,
+            postProcess: true,
+            postProcessFilter: 'median',
+            postProcessValue: 3,
+            numberofcolors: 16,
+            ltres: 2,
+            qtres: 2,
+            pathomit: 30,
+            rightangleenhance: true,
+            strokewidth: 1.5,
+            blurradius: 0,
+            blurdelta: 20,
+            linefilter: true,
+            roundcoords: 2,
+            viewbox: true,
+            magnifierZoom: 4,
+            magnifierSize: 200,
+            magnifierShowCrosshair: true,
+            magnifierCrispPixels: true,
+            magnifierDebug: false
+        };
     }
 } 

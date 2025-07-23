@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>unfake.js - Article Visualizer</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f0f0; color: #333; padding: 20px; }
+        h1 { text-align: center; }
+        .visualization-container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }
+        .vis-item { background: #fff; border: 1px solid #ccc; padding: 15px; text-align: center; }
+        .vis-item h2 { margin: 0 0 10px; font-size: 1em; }
+        img { max-width: 100%; display: block; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges; }
+    </style>
+    <script async src="https://docs.opencv.org/4.11.0/opencv.js" type="text/javascript"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "svd": "https://unpkg.com/svd-js@1.1.1/build-es/svd.js",
+        "image-q": "https://unpkg.com/image-q@4.0.0/dist/esm/image-q.mjs",
+        "../lib/utils.js": "../browser-tool/lib/utils.js",
+        "../lib/pixel.js": "../browser-tool/lib/pixel.js"
+      }
+    }
+    </script>
+</head>
+<body>
+    <h1>Article Visualizations</h1>
+    <div id="output" class="visualization-container">
+        <p>Generating visualizations, please wait...</p>
+    </div>
+
+    <script type="module">
+        import { fileToImageData, withCv } from '../lib/utils.js';
+        import { downscaleByDominantColor } from '../lib/pixel.js';
+        import * as IQ from 'image-q';
+        import { quantizeImage } from '../lib/utils.js';
+        
+        // Helper to add image to the page
+        function addVisualization(title, canvas) {
+            const container = document.getElementById('output');
+            // If the first real item is being added, clear the placeholder
+            if (container.querySelector('p')) {
+                container.innerHTML = '';
+            }
+            const item = document.createElement('div');
+            item.className = 'vis-item';
+
+            const heading = document.createElement('h2');
+            heading.textContent = title;
+
+            const image = new Image();
+            image.src = canvas.toDataURL();
+
+            const downloadLink = document.createElement('a');
+            downloadLink.href = image.src;
+            downloadLink.download = title.toLowerCase().replace(/\s+/g, '_') + '.png';
+            downloadLink.appendChild(image);
+            
+            item.appendChild(heading);
+            item.appendChild(downloadLink);
+            container.appendChild(item);
+        }
+
+        function addSeparator(title) {
+            const container = document.getElementById('output');
+            const h1 = document.createElement('h1');
+            h1.textContent = title;
+            h1.style.width = '100%';
+            h1.style.textAlign = 'center';
+            h1.style.borderTop = '2px solid #ccc';
+            h1.style.paddingTop = '20px';
+            h1.style.marginTop = '20px';
+            container.appendChild(h1);
+        }
+
+        async function visualizerMain(cv, track) {
+            // All the previous logic from `main` is now here, using the passed `cv` object.
+            
+            // Clear the placeholder
+            document.getElementById('output').innerHTML = '';
+
+            // Load the source image
+            const response = await fetch('images/goose_ai.png');
+            const blob = await response.blob();
+            const file = new File([blob], 'goose_ai.png', { type: 'image/png' });
+            const imageData = await fileToImageData(file);
+            
+            const sourceCanvas = document.createElement('canvas');
+            sourceCanvas.width = imageData.width;
+            sourceCanvas.height = imageData.height;
+            sourceCanvas.getContext('2d').putImageData(imageData, 0, 0);
+            addVisualization('Source Image', sourceCanvas);
+            
+            console.log('Visualizer script started...');
+            
+            const scale = 43;
+
+            // Visualization 1: Grid
+            const gridCanvas = document.createElement('canvas');
+            gridCanvas.width = imageData.width;
+            gridCanvas.height = imageData.height;
+            const gridCtx = gridCanvas.getContext('2d');
+            gridCtx.putImageData(imageData, 0, 0);
+            gridCtx.strokeStyle = 'rgba(255, 0, 0, 0.7)';
+            gridCtx.lineWidth = 1;
+            for (let x = 0; x <= imageData.width; x += scale) {
+                gridCtx.beginPath();
+                gridCtx.moveTo(x, 0);
+                gridCtx.lineTo(x, imageData.height);
+                gridCtx.stroke();
+            }
+            for (let y = 0; y <= imageData.height; y += scale) {
+                gridCtx.beginPath();
+                gridCtx.moveTo(0, y);
+                gridCtx.lineTo(imageData.width, y);
+                gridCtx.stroke();
+            }
+            addVisualization('1. Grid Overlay', gridCanvas);
+
+            // Visualization 2: A single block, magnified
+            const blockX = 40; // X-coordinate of the top-left corner of the block
+            const blockY = 40; // Y-coordinate of the top-left corner of the block
+            const magnifiedBlockCanvas = document.createElement('canvas');
+            const magnification = 20;
+            magnifiedBlockCanvas.width = scale * magnification;
+            magnifiedBlockCanvas.height = scale * magnification;
+            const magCtx = magnifiedBlockCanvas.getContext('2d');
+            magCtx.imageSmoothingEnabled = false;
+            // In modern browsers, this is the property for pixelated rendering
+            magCtx.mozImageSmoothingEnabled = false;
+            magCtx.webkitImageSmoothingEnabled = false;
+            magCtx.msImageSmoothingEnabled = false;
+
+            magCtx.drawImage(
+                sourceCanvas,
+                blockX, blockY,       // Source rect (x, y, w, h)
+                scale, scale,
+                0, 0,                 // Destination rect (x, y, w, h)
+                magnifiedBlockCanvas.width, magnifiedBlockCanvas.height
+            );
+            addVisualization('2. Magnified Block', magnifiedBlockCanvas);
+
+            // Visualization 3: Color Tally for the block
+            const blockImageData = sourceCanvas.getContext('2d').getImageData(blockX, blockY, scale, scale);
+            const colorCounts = new Map();
+            for (let i = 0; i < blockImageData.data.length; i += 4) {
+                const r = blockImageData.data[i];
+                const g = blockImageData.data[i+1];
+                const b = blockImageData.data[i+2];
+                const a = blockImageData.data[i+3];
+                if (a < 128) continue; // Ignore transparent/semi-transparent pixels
+                const colorHex = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+                colorCounts.set(colorHex, (colorCounts.get(colorHex) || 0) + 1);
+            }
+            
+            const sortedColors = [...colorCounts.entries()].sort((a, b) => b[1] - a[1]);
+            
+            const tallyCanvas = document.createElement('canvas');
+            const tallyCtx = tallyCanvas.getContext('2d');
+            const lineHeight = 30;
+            const swatchSize = 20;
+            tallyCanvas.width = 200;
+            tallyCanvas.height = sortedColors.length * lineHeight;
+            
+            tallyCtx.font = '16px monospace';
+            tallyCtx.textBaseline = 'middle';
+            
+            sortedColors.forEach(([color, count], index) => {
+                const y = index * lineHeight + (lineHeight / 2);
+                tallyCtx.fillStyle = color;
+                tallyCtx.fillRect(5, y - (swatchSize / 2), swatchSize, swatchSize);
+                tallyCtx.fillStyle = '#000';
+                tallyCtx.fillText(`${count} pixels`, 35, y);
+            });
+            addVisualization('3. Color Tally', tallyCanvas);
+
+            // Visualization 4: The resulting dominant color pixel
+            const dominantColor = sortedColors[0][0];
+            const resultPixelCanvas = document.createElement('canvas');
+            resultPixelCanvas.width = scale * magnification; // Same size as magnified block
+            resultPixelCanvas.height = scale * magnification;
+            const resultCtx = resultPixelCanvas.getContext('2d');
+            resultCtx.fillStyle = dominantColor;
+            resultCtx.fillRect(0, 0, resultPixelCanvas.width, resultPixelCanvas.height);
+            addVisualization('4. Dominant Color Result', resultPixelCanvas);
+
+
+            // Visualization 5: Full downscaled image
+            const finalImageData = downscaleByDominantColor(imageData, scale);
+            const finalCanvas = document.createElement('canvas');
+            finalCanvas.width = finalImageData.width;
+            finalCanvas.height = finalImageData.height;
+            finalCanvas.getContext('2d').putImageData(finalImageData, 0, 0);
+            addVisualization('5. Full Dominant Color Result', finalCanvas);
+
+            // Visualization 6: Nearest Neighbor for comparison
+            const nnCanvas = document.createElement('canvas');
+            nnCanvas.width = finalImageData.width;
+            nnCanvas.height = finalImageData.height;
+            const nnCtx = nnCanvas.getContext('2d');
+            nnCtx.imageSmoothingEnabled = false;
+            nnCtx.mozImageSmoothingEnabled = false;
+            nnCtx.webkitImageSmoothingEnabled = false;
+            nnCtx.msImageSmoothingEnabled = false;
+            nnCtx.drawImage(sourceCanvas, 0, 0, nnCanvas.width, nnCanvas.height);
+            addVisualization('6. Nearest Neighbor Comparison', nnCanvas);
+
+            // --- Dominant Color Block-by-Block Visualization ---
+            addSeparator('Dominant Color: Block Analysis');
+            
+            const interestingBlocks = findInterestingBlocks(sourceCanvas, scale, cv, track);
+            
+            if (interestingBlocks.length === 0) {
+                 const p = document.createElement('p');
+                 p.textContent = 'Could not find any interesting blocks to analyze automatically.';
+                 document.getElementById('output').appendChild(p);
+            } else {
+                interestingBlocks.forEach((block, i) => {
+                    analyzeAndShowBlock(block, i + 1, sourceCanvas, scale, cv);
+                });
+            }
+
+
+            // --- Edge-Aware Detection Visualization ---
+            addSeparator('Edge-Aware Detection Steps');
+
+            // Visualization 7: The tile we will analyze
+            const tileX = 100;
+            const tileY = 150;
+            const tileSize = 150;
+
+            const tileCanvas = document.createElement('canvas');
+            tileCanvas.width = tileSize;
+            tileCanvas.height = tileSize;
+            const tileCtx = tileCanvas.getContext('2d');
+            tileCtx.drawImage(
+                sourceCanvas,
+                tileX, tileY,       // Source rect (x, y, w, h)
+                tileSize, tileSize,
+                0, 0,               // Destination rect (x, y, w, h)
+                tileSize, tileSize
+            );
+            addVisualization('7. Analysis Tile', tileCanvas);
+
+            // Visualization 8 & 9: Sobel Gradients
+            const tileImageData = tileCtx.getImageData(0, 0, tileCanvas.width, tileCanvas.height);
+            const tileMat = track(cv.matFromImageData(tileImageData));
+            const grayMat = track(new cv.Mat());
+            cv.cvtColor(tileMat, grayMat, cv.COLOR_RGBA2GRAY);
+
+            const sobelX = track(new cv.Mat());
+            cv.Sobel(grayMat, sobelX, cv.CV_8U, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
+            const sobelY = track(new cv.Mat());
+            cv.Sobel(grayMat, sobelY, cv.CV_8U, 0, 1, 3, 1, 0, cv.BORDER_DEFAULT);
+
+            const sobelXCanvas = document.createElement('canvas');
+            cv.imshow(sobelXCanvas, sobelX);
+            addVisualization('8. Sobel X Gradient (Vertical Edges)', sobelXCanvas);
+
+            const sobelYCanvas = document.createElement('canvas');
+            cv.imshow(sobelYCanvas, sobelY);
+            addVisualization('9. Sobel Y Gradient (Horizontal Edges)', sobelYCanvas);
+
+            // Visualization 10 & 11: Gradient Profiles
+            const profileX = getProfileFromMat(sobelX, 'horizontal');
+            const profileY = getProfileFromMat(sobelY, 'vertical');
+
+            const profileXCanvas = createProfileCanvas(profileX, tileSize);
+            addVisualization('10. Horizontal Profile (Sum of X-Gradient)', profileXCanvas);
+            
+            const profileYCanvas = createProfileCanvas(profileY, tileSize);
+            addVisualization('11. Vertical Profile (Sum of Y-Gradient)', profileYCanvas);
+
+            // --- Визуализация квантизированной палитры через unfake.js utils ---
+            const quantResult = quantizeImage(imageData, 16);
+            const palette = quantResult.palette;
+            const paletteCanvas = document.createElement('canvas');
+            paletteCanvas.width = palette.length * 32;
+            paletteCanvas.height = 32;
+            const ctx = paletteCanvas.getContext('2d');
+            palette.forEach((color, i) => {
+                ctx.fillStyle = `rgb(${color.r},${color.g},${color.b})`;
+                ctx.fillRect(i * 32, 0, 32, 32);
+            });
+            addVisualization('Quantized Palette (unfake.js)', paletteCanvas);
+            // --- конец блока палитры ---
+
+            // Cleanup
+            tileMat.delete();
+            grayMat.delete();
+            sobelX.delete();
+            sobelY.delete();
+        }
+
+        function getProfileFromMat(mat, direction) {
+            const size = direction === 'horizontal' ? mat.cols : mat.rows;
+            const profile = new Float32Array(size).fill(0);
+            const data = mat.data; // CV_8U data
+
+            for (let y = 0; y < mat.rows; y++) {
+                for (let x = 0; x < mat.cols; x++) {
+                    // Assuming single channel (grayscale)
+                    const val = data[y * mat.cols + x];
+                    if (direction === 'horizontal') {
+                        profile[x] += val;
+                    } else {
+                        profile[y] += val;
+                    }
+                }
+            }
+            return profile;
+        }
+
+        function createProfileCanvas(profile, size) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = size;
+            canvas.height = 100; // Fixed height for profile graphs
+            
+            const maxVal = Math.max(...profile);
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#3498db';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            
+            for (let i = 0; i < profile.length; i++) {
+                const x = i;
+                const y = canvas.height - (profile[i] / maxVal) * (canvas.height - 10); // Leave some padding
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            ctx.stroke();
+            return canvas;
+        }
+
+        function findInterestingBlocks(sourceCanvas, blockSize, cv, track) {
+            const srcMat = track(cv.matFromImageData(sourceCanvas.getContext('2d').getImageData(0, 0, sourceCanvas.width, sourceCanvas.height)));
+            const grayMat = track(new cv.Mat());
+            cv.cvtColor(srcMat, grayMat, cv.COLOR_RGBA2GRAY);
+
+            const blockVariances = [];
+            for (let y = 0; y < grayMat.rows - blockSize; y += blockSize) {
+                for (let x = 0; x < grayMat.cols - blockSize; x += blockSize) {
+                    const roiRect = new cv.Rect(x, y, blockSize, blockSize);
+                    if (roiRect.x + roiRect.width > grayMat.cols || roiRect.y + roiRect.height > grayMat.rows) continue;
+                    
+                    const tileMat = track(grayMat.roi(roiRect));
+                    const mean = track(new cv.Mat());
+                    const stddev = track(new cv.Mat());
+                    cv.meanStdDev(tileMat, mean, stddev);
+                    const variance = stddev.data64F[0];
+                    
+                    if (variance > 5) { // Threshold to avoid mostly blank tiles
+                        blockVariances.push({ x, y, variance });
+                    }
+                }
+            }
+            // Sort by variance, highest first
+            blockVariances.sort((a, b) => b.variance - a.variance);
+            // Return top 3
+            return blockVariances.slice(0, 3);
+        }
+
+        function analyzeAndShowBlock(block, index, sourceCanvas, scale, cv) {
+            const { x: blockX, y: blockY } = block;
+            const magnification = 4; // Smaller magnification for multiple blocks
+
+            // --- Magnified Block ---
+            const magnifiedBlockCanvas = document.createElement('canvas');
+            magnifiedBlockCanvas.width = scale * magnification;
+            magnifiedBlockCanvas.height = scale * magnification;
+            const magCtx = magnifiedBlockCanvas.getContext('2d');
+            magCtx.imageSmoothingEnabled = false;
+            magCtx.mozImageSmoothingEnabled = false;
+            magCtx.webkitImageSmoothingEnabled = false;
+            magCtx.msImageSmoothingEnabled = false;
+            magCtx.drawImage(sourceCanvas, blockX, blockY, scale, scale, 0, 0, magnifiedBlockCanvas.width, magnifiedBlockCanvas.height);
+            addVisualization(`${index}.1. Interesting Block (Variance: ${block.variance.toFixed(2)})`, magnifiedBlockCanvas);
+
+            // --- Color Tally ---
+            const blockImageData = sourceCanvas.getContext('2d').getImageData(blockX, blockY, scale, scale);
+            const colorCounts = new Map();
+            for (let i = 0; i < blockImageData.data.length; i += 4) {
+                if (blockImageData.data[i + 3] < 128) continue;
+                const colorHex = `#${blockImageData.data[i].toString(16).padStart(2, '0')}${blockImageData.data[i+1].toString(16).padStart(2, '0')}${blockImageData.data[i+2].toString(16).padStart(2, '0')}`;
+                colorCounts.set(colorHex, (colorCounts.get(colorHex) || 0) + 1);
+            }
+            const sortedColors = [...colorCounts.entries()].sort((a, b) => b[1] - a[1]);
+            
+            const tallyCanvas = document.createElement('canvas');
+            const tallyCtx = tallyCanvas.getContext('2d');
+            tallyCanvas.width = 200;
+            tallyCanvas.height = sortedColors.length * 20;
+            tallyCtx.font = '12px monospace';
+            tallyCtx.textBaseline = 'middle';
+            sortedColors.forEach(([color, count], i) => {
+                const yPos = i * 20 + 10;
+                tallyCtx.fillStyle = color;
+                tallyCtx.fillRect(5, yPos - 8, 16, 16);
+                tallyCtx.fillStyle = '#000';
+                tallyCtx.fillText(`${count}px`, 30, yPos);
+            });
+            addVisualization(`${index}.2. Color Tally`, tallyCanvas);
+
+            // --- Dominant Color Result ---
+            if (sortedColors.length > 0) {
+                const dominantColor = sortedColors[0][0];
+                const resultPixelCanvas = document.createElement('canvas');
+                resultPixelCanvas.width = scale * magnification;
+                resultPixelCanvas.height = scale * magnification;
+                const resultCtx = resultPixelCanvas.getContext('2d');
+                resultCtx.fillStyle = dominantColor;
+                resultCtx.fillRect(0, 0, resultPixelCanvas.width, resultPixelCanvas.height);
+                addVisualization(`${index}.3. Dominant Color Result`, resultPixelCanvas);
+            }
+        }
+
+        (async () => {
+            const outputDiv = document.getElementById('output');
+            try {
+                outputDiv.innerHTML = '<p>Waiting for OpenCV to load...</p>';
+                await withCv(visualizerMain);
+                console.log('Visualization generation complete.');
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                outputDiv.innerHTML = `<p style="color: red; font-weight: bold;">Error: ${error.message}</p>`;
+            }
+        })();
+
+    </script>
+</body>
+</html> 
