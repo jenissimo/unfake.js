@@ -67,89 +67,167 @@ export function runsBasedDetect(imgData) {
 }
 
 /**
- * Detects pixel art scale using a robust, memory-efficient edge-aware algorithm.
+ * Legacy edge-aware detection that uses a single, large ROI.
+ * Fast but can be less accurate on complex images.
+ * @param {ImageData} imgData The input image data.
+ * @returns {Promise<number>} The detected scale factor.
+ */
+export async function legacyEdgeAwareDetect(imgData) {
+    return withCv(async (cv, track) => {
+        const srcMat = track(cv.matFromImageData(imgData));
+        const gray = track(new cv.Mat());
+        cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY);
+        return await singleRegionEdgeDetect(gray, cv, track);
+    });
+}
+
+
+/**
+ * Detects pixel art scale using a robust, tiled edge-aware algorithm.
+ * This is the default and recommended edge detection method.
  * @param {ImageData} imgData The input image data.
  * @returns {Promise<number>} The detected scale factor.
  */
 export async function edgeAwareDetect(imgData) {
-    if (imgData.width * imgData.height > 4_000_000) {
-        logger.warn('Image > 4MP, using runs-based detection for performance.');
+    if (imgData.width * imgData.height > 8_000_000) { // Increased limit
+        logger.warn('Image > 8MP, using runs-based detection for performance.');
         return runsBasedDetect(imgData);
     }
+
     return withCv(async (cv, track) => {
         try {
             const srcMat = track(cv.matFromImageData(imgData));
             const gray = track(new cv.Mat());
             cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY);
-            const edges = track(new cv.Mat());
-            cv.Canny(gray, edges, 50, 150);
-            const contours = track(new cv.MatVector());
-            const hierarchy = track(new cv.Mat());
-            cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-            let roiRect;
-            if (contours.size() > 0) {
-                let largest = contours.get(0);
-                for (let i = 1; i < contours.size(); i++) {
-                    if (cv.contourArea(contours.get(i)) > cv.contourArea(largest)) {
-                        largest = contours.get(i);
+
+            const allScales = [];
+            const TILE_COUNT = 3; // 3x3 grid
+            const OVERLAP = 0.25; // 25% overlap
+
+            const tileW = Math.floor(gray.cols / TILE_COUNT);
+            const tileH = Math.floor(gray.rows / TILE_COUNT);
+            const overlapW = Math.floor(tileW * OVERLAP);
+            const overlapH = Math.floor(tileH * OVERLAP);
+
+            if (tileW < 50 || tileH < 50) {
+                 logger.warn('Image is too small for tiled detection, falling back to single ROI analysis.');
+                 // Fallback to original logic for small images
+                 return await singleRegionEdgeDetect(gray, cv, track);
+            }
+
+            for (let y = 0; y < TILE_COUNT; y++) {
+                for (let x = 0; x < TILE_COUNT; x++) {
+                    const roiX = Math.max(0, x * tileW - overlapW);
+                    const roiY = Math.max(0, y * tileH - overlapH);
+                    const roiW = Math.min(gray.cols - roiX, tileW + 2 * overlapW);
+                    const roiH = Math.min(gray.rows - roiY, tileH + 2 * overlapH);
+
+                    if (roiW < 30 || roiH < 30) continue;
+
+                    const roiRect = new cv.Rect(roiX, roiY, roiW, roiH);
+                    const tileMat = track(gray.roi(roiRect));
+                    
+                    // Simple check for content variance to skip blank tiles
+                    const mean = track(new cv.Mat());
+                    const stddev = track(new cv.Mat());
+                    cv.meanStdDev(tileMat, mean, stddev);
+                    if (stddev.data64F[0] < 5.0) {
+                         logger.log(`Skipping tile (${x},${y}) due to low variance.`);
+                         continue;
                     }
-                }
-                const rect = cv.boundingRect(largest);
-                const pad = Math.min(20, rect.width * 0.1, rect.height * 0.1);
-                roiRect = new cv.Rect(Math.max(0, rect.x - pad), Math.max(0, rect.y - pad), Math.min(imgData.width - (rect.x - pad), rect.width + 2 * pad), Math.min(imgData.height - (rect.y - pad), rect.height + 2 * pad));
-            } else {
-                logger.warn('No contours found for ROI, using image center.');
-                const w = gray.cols, h = gray.rows;
-                roiRect = new cv.Rect(Math.floor(w * 0.25), Math.floor(h * 0.25), Math.floor(w * 0.5), Math.floor(h * 0.5));
-            }
-            if (roiRect.width < 3 || roiRect.height < 3) {
-                logger.warn(`Calculated ROI is too small (${roiRect.width}x${roiRect.height}), cannot perform edge detection. Returning 1.`);
-                return 1;
-            }
-            const roiMat = track(gray.roi(roiRect));
-            const diffH = track(new cv.Mat());
-            const diffV = track(new cv.Mat());
-            cv.Sobel(roiMat, diffH, cv.CV_32F, 1, 0);
-            cv.Sobel(roiMat, diffV, cv.CV_32F, 0, 1);
-            const reduceSum = (mat, axis) => {
-                const sums = new Float32Array(axis === 0 ? mat.cols : mat.rows).fill(0);
-                const data = mat.data32F;
-                for (let y = 0; y < mat.rows; y++) {
-                    for (let x = 0; x < mat.cols; x++) {
-                        const val = Math.abs(data[y * mat.cols + x]);
-                        if (axis === 0) sums[x] += val; else sums[y] += val;
-                    }
-                }
-                return sums;
-            };
-            const hSum = reduceSum(diffH, 0);
-            const vSum = reduceSum(diffV, 1);
-            const hScale = detectScale(Array.from(hSum));
-            const vScale = detectScale(Array.from(vSum));
-            const candidates = new Set();
-            for (let s = Math.max(3, hScale - 2); s <= hScale + 2; s++) candidates.add(s);
-            for (let s = Math.max(3, vScale - 2); s <= vScale + 2; s++) candidates.add(s);
-            if (candidates.size === 0) candidates.add(Math.round((hScale + vScale) / 2));
-            let bestScale = Math.round((hScale + vScale) / 2) || 1;
-            let maxFitScore = -1;
-            for (const s of candidates) {
-                if (s <= 1) continue;
-                const fitW = 1.0 - ((roiRect.width % s) / s);
-                const fitH = 1.0 - ((roiRect.height % s) / s);
-                const score = fitW + fitH;
-                if (score > maxFitScore) {
-                    maxFitScore = score;
-                    bestScale = s;
+
+                    const hSum = getProfile(tileMat, 'horizontal', cv, track);
+                    const vSum = getProfile(tileMat, 'vertical', cv, track);
+
+                    const hScale = detectScale(Array.from(hSum));
+                    const vScale = detectScale(Array.from(vSum));
+
+                    if (hScale > 1) allScales.push(hScale);
+                    if (vScale > 1) allScales.push(vScale);
+                     logger.log(`Tile (${x},${y}) scales: h=${hScale}, v=${vScale}`);
                 }
             }
-            logger.log(`Edge-aware detection (ROI: ${roiRect.width}x${roiRect.height}) found scale: ${bestScale} (h: ${hScale}, v: ${vScale})`);
+
+            if (allScales.length === 0) {
+                logger.warn('Tiled detection yielded no valid scales. Trying single large region.');
+                return await singleRegionEdgeDetect(gray, cv, track);
+            }
+
+            const bestScale = mode(allScales) || 1;
+            logger.log(`Edge-aware detection complete. Found scales: [${allScales.join(', ')}]. Best guess: ${bestScale}`);
             return bestScale;
+
         } catch (error) {
             logger.error('Edge-aware detection failed critically:', error);
             return 1;
         }
     });
 }
+
+
+/**
+ * Helper to perform edge detection on a single region of a grayscale cv.Mat.
+ * @param {cv.Mat} grayMat - The single-channel grayscale image matrix.
+ * @param {cv} cv - The OpenCV instance.
+ * @param {function} track - The memory tracker.
+ * @returns {Promise<number>} Detected scale.
+ */
+async function singleRegionEdgeDetect(grayMat, cv, track) {
+    const w = grayMat.cols,
+        h = grayMat.rows;
+    // Use center 75% as ROI
+    const roiRect = new cv.Rect(Math.floor(w * 0.125), Math.floor(h * 0.125), Math.floor(w * 0.75), Math.floor(h * 0.75));
+
+    if (roiRect.width < 3 || roiRect.height < 3) {
+        logger.warn(`Calculated ROI is too small (${roiRect.width}x${roiRect.height}), cannot perform edge detection. Returning 1.`);
+        return 1;
+    }
+    const roiMat = track(grayMat.roi(roiRect));
+    const hSum = getProfile(roiMat, 'horizontal', cv, track);
+    const vSum = getProfile(roiMat, 'vertical', cv, track);
+
+    const hScale = detectScale(Array.from(hSum));
+    const vScale = detectScale(Array.from(vSum));
+
+    // Simple average if scales differ, favoring larger scales if close
+    if (hScale > 1 && vScale > 1 && Math.abs(hScale - vScale) <= 2) {
+        return Math.round((hScale + vScale) / 2);
+    }
+    // Return the more confident (larger) scale, or 1 if none found
+    const result = Math.max(hScale, vScale, 1);
+    logger.log(`Single region detection found scale: ${result} (h: ${hScale}, v: ${vScale})`);
+    return result;
+}
+
+/**
+ * Generates a gradient profile for a given matrix.
+ * @param {cv.Mat} mat - The input matrix (grayscale).
+ * @param {'horizontal'|'vertical'} direction - The direction for the profile.
+ * @param {cv} cv - OpenCV instance.
+ * @param {function} track - Memory tracker.
+ * @returns {Float32Array} The summed gradient profile.
+ */
+function getProfile(mat, direction, cv, track) {
+    const diff = track(new cv.Mat());
+    if (direction === 'horizontal') {
+        cv.Sobel(mat, diff, cv.CV_32F, 1, 0);
+    } else {
+        cv.Sobel(mat, diff, cv.CV_32F, 0, 1);
+    }
+
+    const axis = direction === 'horizontal' ? 0 : 1;
+    const sums = new Float32Array(axis === 0 ? mat.cols : mat.rows).fill(0);
+    const data = diff.data32F;
+    for (let y = 0; y < mat.rows; y++) {
+        for (let x = 0; x < mat.cols; x++) {
+            const val = Math.abs(data[y * mat.cols + x]);
+            if (axis === 0) sums[x] += val;
+            else sums[y] += val;
+        }
+    }
+    return sums;
+}
+
 
 /**
  * Enhanced downscaling method using dominant color.
@@ -494,6 +572,7 @@ export async function processImage({
     maxColors = 32,
     manualScale = null,
     detectMethod = 'auto', // 'auto', 'runs', 'edge'
+    edgeDetectMethod = 'tiled', // 'tiled' or 'legacy'
     downscaleMethod = 'dominant', // 'dominant', 'median', 'mode', 'mean', 'nearest', 'content-adaptive'
     domMeanThreshold = 0.05,
     cleanup = { morph: false, jaggy: false },
@@ -525,7 +604,7 @@ export async function processImage({
     } else {
         const detectionFn = {
             'runs': runsBasedDetect,
-            'edge': edgeAwareDetect,
+            'edge': edgeDetectMethod === 'legacy' ? legacyEdgeAwareDetect : edgeAwareDetect,
             'auto': async (img) => {
                 const runsScale = runsBasedDetect(img);
                 if (runsScale > 1) {
@@ -533,7 +612,8 @@ export async function processImage({
                     return runsScale;
                 }
                 logger.log('Auto-detect: "runs" failed, falling back to "edge".');
-                return await edgeAwareDetect(img);
+                const edgeFn = edgeDetectMethod === 'legacy' ? legacyEdgeAwareDetect : edgeAwareDetect;
+                return await edgeFn(img);
             }
         }[detectMethod];
 
@@ -646,6 +726,7 @@ export async function processImage({
         processing_steps: {
             scale_detection: {
                 method: detectMethod,
+                edge_method: manualScale ? null : detectMethod === 'edge' || detectMethod === 'auto' ? edgeDetectMethod : null,
                 detected_scale: scale,
                 manual_scale: manualScale
             },

@@ -184,8 +184,8 @@ function initializeTweakpane() {
     const settings = {
         // Pixel Art settings
         maxColors: 16,
-        snapGrid: false,
-        detectMethod: 'auto',
+        snapGrid: true,
+        gridDetectionAlgorithm: 'auto-tiled', // 'auto-tiled', 'auto-legacy'
         downscaleMethod: 'dominant',
         domMeanThreshold: 0.05,
         cleanupMorph: true,
@@ -232,34 +232,41 @@ function initializeTweakpane() {
         palette: []
     };
     
-    // Pixel Art folder
-    const pixelFolder = pixelPane.addFolder({
-        title: 'Pixel Art Settings',
+    // --- Pixel Art Pane ---
+    const mainPixelFolder = pixelPane.addFolder({
+        title: 'Main Settings',
         expanded: true
     });
-    
-    pixelFolder.addBinding(settings, 'maxColors', {
+
+    mainPixelFolder.addBinding(settings, 'maxColors', {
         label: 'Max Colors',
         min: 2,
         max: 256,
         step: 1
     });
     
-    pixelFolder.addBinding(settings, 'snapGrid', {
+    mainPixelFolder.addBinding(settings, 'snapGrid', {
         label: 'Snap to Grid'
     });
-    
-    pixelFolder.addBinding(settings, 'detectMethod', {
-        label: 'Scale Detection',
+
+    mainPixelFolder.addBinding(settings, 'gridDetectionAlgorithm', {
+        label: 'Grid Detection',
         options: {
-            'auto': 'auto',
-            'runs': 'runs',
-            'edge': 'edge'
+            'Complex Grid': 'auto-tiled',
+            'Simple Grid': 'auto-legacy',
         }
     });
+
+    const advancedPixelFolder = pixelPane.addFolder({
+        title: 'Advanced Settings',
+        expanded: false,
+    });
     
-    pixelFolder.addBinding(settings, 'downscaleMethod', {
-        label: 'Downscale Method',
+    // --- Downscaling Sub-folder ---
+    const downscalingFolder = advancedPixelFolder.addFolder({ title: 'Downscaling Method' });
+
+    downscalingFolder.addBinding(settings, 'downscaleMethod', {
+        label: 'Method',
         options: {
             'dominant': 'dominant',
             'median': 'median',
@@ -270,78 +277,68 @@ function initializeTweakpane() {
         }
     });
     
-    // DomMean threshold slider (initially hidden)
-    const domMeanThresholdBinding = pixelFolder.addBinding(settings, 'domMeanThreshold', {
-        label: 'Dominant Color Threshold',
+    const domMeanThresholdBinding = downscalingFolder.addBinding(settings, 'domMeanThreshold', {
+        label: 'Dominant Threshold',
         min: 0.01,
         max: 0.5,
         step: 0.01
     });
     
-    // Hide/show domMean threshold slider based on method
     domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(settings.downscaleMethod);
-    
-    // Update visibility when downscale method changes
-    pixelFolder.children[pixelFolder.children.length - 2].on('change', (ev) => {
+    downscalingFolder.children[0].on('change', (ev) => {
         domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(ev.value);
     });
     
-    // Auto pixel size checkbox
-    const autoPixelSizeBinding = pixelFolder.addBinding(settings, 'autoPixelSize', {
-        label: 'Auto pixel size'
+    // --- Manual Pixel Size Sub-folder ---
+    const pixelSizeFolder = advancedPixelFolder.addFolder({ title: 'Manual Pixel Size' });
+    const autoPixelSizeBinding = pixelSizeFolder.addBinding(settings, 'autoPixelSize', {
+        label: 'Auto-detect size'
     });
     
-    // Manual pixel size slider (initially hidden)
-    const pixelSizeBinding = pixelFolder.addBinding(settings, 'pixelSize', {
+    const pixelSizeBinding = pixelSizeFolder.addBinding(settings, 'pixelSize', {
         label: 'Pixel Size',
         min: 1,
         max: 32,
         step: 1
     });
     
-    // Hide/show pixel size slider based on auto checkbox
     pixelSizeBinding.hidden = settings.autoPixelSize;
-    
-    // Update visibility when auto checkbox changes
     autoPixelSizeBinding.on('change', (ev) => {
         pixelSizeBinding.hidden = ev.value;
     });
     
-    // Cleanup settings
-    pixelFolder.addBinding(settings, 'cleanupMorph', {
+    // --- Cleanup Sub-folder ---
+    const cleanupFolder = advancedPixelFolder.addFolder({ title: 'Image Cleanup' });
+    cleanupFolder.addBinding(settings, 'cleanupMorph', {
         label: 'Morphological Cleanup'
     });
     
-    pixelFolder.addBinding(settings, 'cleanupJaggy', {
+    cleanupFolder.addBinding(settings, 'cleanupJaggy', {
         label: 'Jaggy Cleanup'
     });
     
-    // Alpha threshold slider (initially hidden)
-    const alphaThresholdBinding = pixelFolder.addBinding(settings, 'alphaThreshold', {
+    const enableAlphaBinarizationBinding = cleanupFolder.addBinding(settings, 'enableAlphaBinarization', {
+        label: 'Enable Alpha Binarization'
+    });
+    
+    const alphaThresholdBinding = cleanupFolder.addBinding(settings, 'alphaThreshold', {
         label: 'Alpha Threshold',
         min: 0,
         max: 255,
         step: 1
     });
-    
-    // Enable alpha binarization checkbox
-    const enableAlphaBinarizationBinding = pixelFolder.addBinding(settings, 'enableAlphaBinarization', {
-        label: 'Enable Alpha Binarization'
-    });
-    
-    // Hide/show alpha threshold slider based on checkbox
+
     alphaThresholdBinding.hidden = !settings.enableAlphaBinarization;
-    
-    // Update visibility when checkbox changes
     enableAlphaBinarizationBinding.on('change', (ev) => {
         alphaThresholdBinding.hidden = !ev.value;
         if (!ev.value) {
-            settings.alphaThreshold = 0; // Disable binarization
+            settings.alphaThreshold = 0;
         } else if (settings.alphaThreshold === 0) {
-            settings.alphaThreshold = 128; // Enable with default value
+            settings.alphaThreshold = 128;
         }
     });
-    
+
+
     // Vector folder
     const vectorFolder = vectorPane.addFolder({
         title: 'Vector Settings',
@@ -1133,6 +1130,9 @@ async function processImage() {
         if (appState.mode === 'pixel') {
             console.log('Processing pixel art with settings:', settings);
             const manualScale = settings.autoPixelSize ? null : [settings.pixelSize, settings.pixelSize];
+            
+            const [detectMethod, edgeDetectMethod] = settings.gridDetectionAlgorithm.split('-');
+
             console.log('Manual scale value:', manualScale);
             if (manualScale) {
                 console.log(`Using manual pixel size: ${settings.pixelSize}×${settings.pixelSize}px`);
@@ -1146,7 +1146,8 @@ async function processImage() {
                 file: appState.originalFile,
                 maxColors: settings.maxColors,
                 snapGrid: settings.snapGrid,
-                detectMethod: settings.detectMethod,
+                detectMethod: detectMethod,
+                edgeDetectMethod: edgeDetectMethod || 'tiled',
                 downscaleMethod: settings.downscaleMethod,
                 domMeanThreshold: settings.domMeanThreshold,
                 manualScale: manualScale,
@@ -1279,7 +1280,13 @@ function displayPixelArtResult(result) {
             // Scale detection info
             if (steps.scale_detection) {
                 const scaleInfo = steps.scale_detection;
-                if (scaleInfo.method) info.push(`Detection: ${scaleInfo.method}`);
+                let methodInfo = `Detection: ${scaleInfo.method}`;
+                if ((scaleInfo.method === 'edge' || scaleInfo.method === 'auto') && !scaleInfo.manual_scale) {
+                    // Reformat the display string to be cleaner
+                    const edgeMethodDisplay = (scaleInfo.edge_method === 'legacy') ? 'Simple' : 'Complex';
+                    methodInfo += ` (${edgeMethodDisplay})`;
+                }
+                info.push(methodInfo);
             }
             
             // Downscaling info
