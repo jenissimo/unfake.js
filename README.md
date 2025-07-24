@@ -2,6 +2,15 @@
 
 **unfake.js** is a versatile JavaScript library designed to bridge the gap between AI-generated images and clean, usable assets. It offers two primary modes of operation: a powerful **Pixel Art Processor** and a sophisticated **Image Vectorizer**. The library is bundled with a feature-rich browser-based tool for easy, interactive use.
 
+---
+
+**Integrations & Online Demo**
+
+- **ComfyUI Node:** [ComfyUI-Unfake-Pixels](https://github.com/tauraloke/ComfyUI-Unfake-Pixels/) — use unfake.js directly in your ComfyUI workflows.
+- **Try it online:** [unfaker on itch.io](https://jenissimo.itch.io/unfaker) — browser-based demo, no install required.
+
+---
+
 ![Browser Tool Screenshot for Pixel Art](demo-pixel.png)
 ![Browser Tool Screenshot for Vectorize](demo-vector.png)
 
