@@ -1556,7 +1556,7 @@ async function handleDownloadComparison() {
     if (!appState.originalImage || !appState.processedImage[appState.mode]) return;
     const originalImg = appState.originalImage;
     let resultCanvas;
-    let scale = 10;
+    let scale = 20;
     let outW, outH;
     // --- Prepare upscaled result ---
     if (appState.mode === 'pixel') {
@@ -1679,8 +1679,31 @@ async function handleDownloadComparison() {
     outCtx.font = 'bold 28px Arial, sans-serif';
     outCtx.fillStyle = '#222';
     outCtx.textAlign = 'center';
-    outCtx.fillText('Original', upOrig.width / 2, 40);
-    outCtx.fillText('Result', upOrig.width + resultCanvas.width / 2, 40);
+    // Размеры
+    const origLabel = `Original (${originalImg.naturalWidth}x${originalImg.naturalHeight})`;
+    let resW, resH;
+    if (appState.mode === 'pixel') {
+        resW = appState.processedImage.pixel.canvas.width;
+        resH = appState.processedImage.pixel.canvas.height;
+    } else {
+        // Для vector
+        const svg = appState.processedImage.vector.svg;
+        // SVG -> canvas уже был, берём размеры до апскейла
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(svg, 'image/svg+xml');
+        const svgEl = doc.querySelector('svg');
+        if (svgEl && svgEl.hasAttribute('width') && svgEl.hasAttribute('height')) {
+            resW = parseInt(svgEl.getAttribute('width'));
+            resH = parseInt(svgEl.getAttribute('height'));
+        } else {
+            // fallback: берём размеры канваса до апскейла
+            resW = resultCanvas.width / scale;
+            resH = resultCanvas.height / scale;
+        }
+    }
+    const resLabel = `Result (${resW}x${resH})`;
+    outCtx.fillText(origLabel, upOrig.width / 2, 30);
+    outCtx.fillText(resLabel, upOrig.width + resultCanvas.width / 2, 30);
     //outCtx.fillText('Settings', upOrig.width + resultCanvas.width + settingsW / 2, 40);
     // Download
     outCanvas.toBlob((blob) => {
