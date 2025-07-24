@@ -288,6 +288,19 @@ class Magnifier {
         this.updatePosition();
     }
     
+    // Clear cache for a specific image element
+    clearCacheForElement(element) {
+        if (!element) return;
+        if (this.svgImageCache && this.svgImageCache.has(element)) {
+            this.svgImageCache.delete(element);
+            if (this.options.debug) console.log('Magnifier: Cleared SVG cache for element');
+        }
+        if (this.imgDataURLCache && this.imgDataURLCache.has(element)) {
+            this.imgDataURLCache.delete(element);
+            if (this.options.debug) console.log('Magnifier: Cleared DataURL cache for element');
+        }
+    }
+
     // Draw crosshair - This is now handled by CSS
     
     // Update magnifier position

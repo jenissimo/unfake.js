@@ -148,6 +148,7 @@ function cacheElements() {
         actionButtons: document.querySelector('.action-buttons'),
         copyBtn: document.getElementById('copy-btn'),
         downloadBtn: document.getElementById('download-btn'),
+        downloadScaledBtn: document.getElementById('download-scaled-btn'),
         
         // Settings
         tweakpaneContainer: document.getElementById('tweakpane-container'),
@@ -761,8 +762,7 @@ function initializeResultTweakpane() {
     
     // Result settings object
     const resultSettings = {
-        palette: [],
-        exportFormat: 'png'
+        palette: []
     };
     
     // Palette folder
@@ -853,7 +853,8 @@ function bindEvents() {
     
     // Action buttons
     elements.copyBtn.addEventListener('click', handleCopy);
-    elements.downloadBtn.addEventListener('click', handleDownload);
+    elements.downloadBtn.addEventListener('click', () => handleDownload(false));
+    elements.downloadScaledBtn.addEventListener('click', () => handleDownload(true));
     
     // Paste from clipboard
     document.addEventListener('paste', handlePaste);
@@ -961,6 +962,11 @@ function handleFile(file) {
         alert('File size must be less than 10MB');
         return;
     }
+
+    // Clear magnifier cache for the old image before loading a new one
+    if (appState.magnifier && elements.originalImage) {
+        appState.magnifier.clearCacheForElement(elements.originalImage);
+    }
     
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -1040,6 +1046,17 @@ function updateOriginalImageHint() {
 
 // Handle reset
 function handleReset() {
+    // Clear magnifier cache for the old images before removing them
+    if (appState.magnifier) {
+        if (elements.originalImage) {
+            appState.magnifier.clearCacheForElement(elements.originalImage);
+        }
+        const resultImage = elements.resultArea.querySelector('img, svg, canvas');
+        if (resultImage) {
+            appState.magnifier.clearCacheForElement(resultImage);
+        }
+    }
+
     appState.originalImage = null;
     appState.originalFile = null;
     appState.processedImage = { pixel: null, vector: null };
@@ -1063,13 +1080,8 @@ function handleReset() {
         window.resultPane.element.style.display = 'none';
     }
     
-    // Deactivate magnifier if active
-    if (appState.magnifier && appState.magnifier.isActive) {
-        appState.magnifier.deactivate();
-        elements.magnifierToggle.classList.remove('active');
-        elements.magnifierToggle.textContent = '🔍';
-        elements.magnifierToggle.title = 'Toggle magnifier';
-    }
+    // The magnifier will hide itself if no image is under the cursor.
+    // No need to deactivate it, which was the bug.
     
     updateUI();
 }
@@ -1346,6 +1358,7 @@ function displayPixelArtResult(result) {
     }
     
     elements.downloadBtn.textContent = 'Download PNG';
+    elements.downloadScaledBtn.style.display = 'inline-flex';
     elements.actionButtons.style.display = 'flex';
     
     // Ensure palette is in hex format for consistency
@@ -1419,6 +1432,7 @@ function displayVectorResult(result) {
     `;
     
     elements.downloadBtn.textContent = 'Download SVG';
+    elements.downloadScaledBtn.style.display = 'none';
     elements.actionButtons.style.display = 'flex';
     
     // Store SVG for download
@@ -1506,32 +1520,57 @@ async function copyVector() {
 }
 
 // Handle download
-function handleDownload() {
+function handleDownload(scaled = false) {
     if (!appState.processedImage[appState.mode]) return;
     
     if (appState.mode === 'pixel') {
-        downloadPixelArt();
+        downloadPixelArt(scaled);
     } else {
         downloadVector();
     }
 }
 
 // Download pixel art as PNG
-function downloadPixelArt() {
-    const canvas = appState.processedImage[appState.mode].canvas;
+function downloadPixelArt(scaled = false) {
+    const processed = appState.processedImage[appState.mode];
+    const canvas = processed.canvas;
+
     if (!canvas) {
         alert('No image canvas available to download.');
         return;
     }
 
     const link = document.createElement('a');
-    link.download = 'unfake-pixel-art.png';
-    
-    canvas.toBlob((blob) => {
-        link.href = URL.createObjectURL(blob);
-        link.click();
-        URL.revokeObjectURL(link.href);
-    }, 'image/png');
+    link.download = `unfake-pixel-art${scaled ? '-scaled' : ''}.png`;
+
+    if (scaled && processed.manifest) {
+        let pixelSize = 1;
+        if (processed.manifest.processing_steps && processed.manifest.processing_steps.scale_detection) {
+            pixelSize = processed.manifest.processing_steps.scale_detection.detected_scale || 1;
+        }
+
+        const scaledCanvas = document.createElement('canvas');
+        const scaledCtx = scaledCanvas.getContext('2d');
+        
+        scaledCanvas.width = canvas.width * pixelSize;
+        scaledCanvas.height = canvas.height * pixelSize;
+
+        scaledCtx.imageSmoothingEnabled = false;
+        scaledCtx.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+        
+        scaledCanvas.toBlob((blob) => {
+            link.href = URL.createObjectURL(blob);
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }, 'image/png');
+
+    } else {
+        canvas.toBlob((blob) => {
+            link.href = URL.createObjectURL(blob);
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }, 'image/png');
+    }
 }
 
 // Download vector as SVG

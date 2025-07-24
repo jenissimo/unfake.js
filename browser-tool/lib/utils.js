@@ -584,6 +584,21 @@ export function downscaleBlock(imgData, hScale, vScale, method = 'median', domMe
 
   for (let ty = 0; ty < targetH; ty++) {
     for (let tx = 0; tx < targetW; tx++) {
+      const offset = (ty * targetW + tx) * 4;
+
+      if (method === 'nearest') {
+        const sx = tx * hScale + Math.floor(hScale / 2);
+        const sy = ty * vScale + Math.floor(vScale / 2);
+        if (sx < imgData.width && sy < imgData.height) {
+          const idx = (sy * imgData.width + sx) * 4;
+          out[offset] = d[idx];
+          out[offset + 1] = d[idx + 1];
+          out[offset + 2] = d[idx + 2];
+          out[offset + 3] = d[idx + 3];
+        }
+        continue;
+      }
+
       const colorsR = [], colorsG = [], colorsB = [], colorsA = [];
 
       for (let dy = 0; dy < vScale; dy++) {
@@ -603,12 +618,11 @@ export function downscaleBlock(imgData, hScale, vScale, method = 'median', domMe
 
       if (colorsA.length === 0) continue;
 
-      const offset = (ty * targetW + tx) * 4;
       const hasColor = colorsR.length > 0;
 
       let aggregator;
       switch (method) {
-        case 'nearest': aggregator = colors => colors[0] || 0; break;
+        // case 'nearest' is handled above
         case 'mode': aggregator = mode; break;
         case 'mean': aggregator = mean; break;
         case 'median': aggregator = median; break;
