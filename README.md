@@ -7,6 +7,7 @@
 **Integrations & Online Demo**
 
 - **ComfyUI Node:** [ComfyUI-Unfake-Pixels](https://github.com/tauraloke/ComfyUI-Unfake-Pixels/) — use unfake.js directly in your ComfyUI workflows.
+- **Python Port:** [unfake.py](https://github.com/painebenjamin/unfake.py) — A blazing fast Python implementation with Rust-accelerated quantization, offering a 10-20% speedup over the JS version.
 - **Try it online:** [unfaker on itch.io](https://jenissimo.itch.io/unfaker) — browser-based demo, no install required.
 
 ---
