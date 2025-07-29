@@ -239,7 +239,7 @@ function getProfile(mat, direction, cv, track) {
  * @param {number} threshold - Threshold for using dominant color (0.05 = 5%).
  * @returns {ImageData} Downscaled image.
  */
-export function downscaleByDominantColor(imgData, scale, threshold = 0.05) {
+export function downscaleByDominantColor(imgData, scale, threshold = 0.15) {
     const targetW = Math.floor(imgData.width / scale);
     const targetH = Math.floor(imgData.height / scale);
     const outData = new Uint8ClampedArray(targetW * targetH * 4);
@@ -250,14 +250,14 @@ export function downscaleByDominantColor(imgData, scale, threshold = 0.05) {
         for (let tx = 0; tx < targetW; tx++) {
             const colorCounts = new Map();
             const alphaValues = [];
-            let dominantColor = 0; // Black
-            let maxCount = 0;
+            const opaqueColorsForMean = [];
 
-            // Scan scale x scale block
+            // Scan scale x scale block once
             for (let dy = 0; dy < scale; dy++) {
                 for (let dx = 0; dx < scale; dx++) {
                     const sx = tx * scale + dx;
                     const sy = ty * scale + dy;
+                    if (sx >= srcWidth || sy >= imgData.height) continue;
                     const idx = (sy * srcWidth + sx) * 4;
 
                     const a = srcData[idx + 3];
@@ -268,64 +268,40 @@ export function downscaleByDominantColor(imgData, scale, threshold = 0.05) {
                         const r = srcData[idx];
                         const g = srcData[idx + 1];
                         const b = srcData[idx + 2];
-                        // Use 24-bit integer as color key
                         const colorInt = (r << 16) | (g << 8) | b;
-                        const newCount = (colorCounts.get(colorInt) || 0) + 1;
-                        colorCounts.set(colorInt, newCount);
-
-                        if (newCount > maxCount) {
-                            maxCount = newCount;
-                            dominantColor = colorInt;
-                        }
+                        colorCounts.set(colorInt, (colorCounts.get(colorInt) || 0) + 1);
+                        opaqueColorsForMean.push(colorInt);
                     }
                 }
             }
 
             const outIdx = (ty * targetW + tx) * 4;
 
-            if (maxCount > 0) {
-                // Collect all full colors (RGB) for analysis
-                const colors = [];
-                for (let dy = 0; dy < scale; dy++) {
-                    for (let dx = 0; dx < scale; dx++) {
-                        const sx = tx * scale + dx;
-                        const sy = ty * scale + dy;
-                        const idx = (sy * srcWidth + sx) * 4;
-                        const a = srcData[idx + 3];
-                        if (a > 128) {
-                            const r = srcData[idx];
-                            const g = srcData[idx + 1];
-                            const b = srcData[idx + 2];
-                            // Use 24-bit integer as color key
-                            const colorInt = (r << 16) | (g << 8) | b;
-                            colors.push(colorInt);
-                        }
+            if (opaqueColorsForMean.length > 0) {
+                let dominantColor = 0;
+                let maxCount = 0;
+
+                // Find the dominant color from our counts
+                for (const [color, count] of colorCounts.entries()) {
+                    if (count > maxCount) {
+                        maxCount = count;
+                        dominantColor = color;
                     }
                 }
 
-                // Find dominant color or use mean
                 let finalColor;
-                if (colors.length > 0) {
-                    const freq = {};
-                    colors.forEach(color => freq[color] = (freq[color] || 0) + 1);
-                    const [dominantColor, count] = Object.entries(freq)
-                        .reduce((best, cur) => cur[1] > best[1] ? cur : best);
-
-                    if (count / colors.length >= threshold) {
-                        // Use dominant color
-                        finalColor = +dominantColor;
-                    } else {
-                        // Use mean value for each channel
-                        const rSum = colors.reduce((sum, color) => sum + ((color >> 16) & 0xFF), 0);
-                        const gSum = colors.reduce((sum, color) => sum + ((color >> 8) & 0xFF), 0);
-                        const bSum = colors.reduce((sum, color) => sum + (color & 0xFF), 0);
-                        const avgR = Math.round(rSum / colors.length);
-                        const avgG = Math.round(gSum / colors.length);
-                        const avgB = Math.round(bSum / colors.length);
-                        finalColor = (avgR << 16) | (avgG << 8) | avgB;
-                    }
+                // Use dominant color only if its frequency is above the threshold
+                if (maxCount / opaqueColorsForMean.length >= threshold) {
+                    finalColor = dominantColor;
                 } else {
-                    finalColor = 0; // Black color
+                    // Otherwise, fall back to the mean color of the block
+                    const rSum = opaqueColorsForMean.reduce((sum, color) => sum + ((color >> 16) & 0xFF), 0);
+                    const gSum = opaqueColorsForMean.reduce((sum, color) => sum + ((color >> 8) & 0xFF), 0);
+                    const bSum = opaqueColorsForMean.reduce((sum, color) => sum + (color & 0xFF), 0);
+                    const avgR = Math.round(rSum / opaqueColorsForMean.length);
+                    const avgG = Math.round(gSum / opaqueColorsForMean.length);
+                    const avgB = Math.round(bSum / opaqueColorsForMean.length);
+                    finalColor = (avgR << 16) | (avgG << 8) | avgB;
                 }
 
                 // Write result
@@ -363,6 +339,13 @@ function _contentAdaptiveCore(srcLab, targetW, targetH, cv, track) {
     const { cols: wi, rows: hi } = srcLab;
     const wo = targetW, ho = targetH;
     const rx = wi / wo, ry = hi / ho;
+
+    // According to the paper "Content-Adaptive Image Downscaling", the clamping
+    // of singular values should be adaptive to the scaling ratio `r`.
+    const r_avg = (rx + ry) / 2.0;
+    const min_singular_value = 0.5;
+    const max_singular_value = Math.max(1.0, 0.5 * r_avg);
+    logger.log(`Adaptive clamping range for singular values: [${min_singular_value}, ${max_singular_value}] based on scale ${r_avg.toFixed(2)}`);
 
     let labPlanes = track(new cv.MatVector());
     cv.split(srcLab, labPlanes);
@@ -472,10 +455,11 @@ function _contentAdaptiveCore(srcLab, targetW, targetH, cv, track) {
 
             const { u, q, v } = SVD(sigma_mat2d);
 
-            // !!! RESTORE ORIGINAL VALUES FOR SHARPNESS !!!
-            // These values force kernels to be small, which prevents blurring.
-            q[0] = Math.max(0.05, Math.min(q[0], 0.1));
-            q[1] = Math.max(0.05, Math.min(q[1], 0.1));
+            // Clamp singular values according to the paper's recommendation [0.5, max(1.0, 0.5*r)].
+            // This prevents excessive blurring by adapting kernel sizes to the scale factor,
+            // replacing the previous fixed small values.
+            q[0] = Math.max(min_singular_value, Math.min(q[0], max_singular_value));
+            q[1] = Math.max(min_singular_value, Math.min(q[1], max_singular_value));
 
             const s_diag = [[q[0], 0], [0, q[1]]];
             const v_t = [[v[0][0], v[1][0]], [v[0][1], v[1][1]]];
@@ -570,11 +554,12 @@ export async function contentAdaptiveDownscale(imgData, targetW, targetH) {
 export async function processImage({
     file,
     maxColors = 32,
+    autoColorCount = false,
     manualScale = null,
     detectMethod = 'auto', // 'auto', 'runs', 'edge'
     edgeDetectMethod = 'tiled', // 'tiled' or 'legacy'
     downscaleMethod = 'dominant', // 'dominant', 'median', 'mode', 'mean', 'nearest', 'content-adaptive'
-    domMeanThreshold = 0.05,
+    domMeanThreshold = 0.15, // CHANGED: Increased from 0.05 for more robust dominant color selection.
     cleanup = { morph: false, jaggy: false },
     fixedPalette = null,
     alphaThreshold = 128,
@@ -666,11 +651,29 @@ export async function processImage({
     let colorsUsed = initialColors;
     let quantizeAfter = false;
 
+    // Auto-detect optimal color count if enabled
+    let effectiveMaxColors = maxColors;
+    if (autoColorCount && initialColors > 2) {
+        logger.log('Auto-detecting optimal color count...');
+        try {
+            effectiveMaxColors = await detectOptimalColorCount(current, {
+                downsampleTo: 64,
+                colorQuantizeFactor: 48,
+                dominanceThreshold: 0.015,
+                maxColors: Math.min(maxColors, 32) // Cap at 32 for auto-detection
+            });
+            logger.log(`Auto-detected optimal color count: ${effectiveMaxColors}`);
+        } catch (error) {
+            logger.warn('Auto-color detection failed, using manual setting:', error);
+            effectiveMaxColors = maxColors;
+        }
+    }
+
     if (downscaleMethod === 'content-adaptive') {
         // Не квантизуем до даунскейла
-    } else if (maxColors < 256 && initialColors > maxColors) {
-        logger.log(`Quantizing from ${initialColors} to a max of ${maxColors} colors.`);
-        const quantResult = quantizeImage(current, maxColors, fixedPalette);
+    } else if (effectiveMaxColors < 256 && initialColors > effectiveMaxColors) {
+        logger.log(`Quantizing from ${initialColors} to a max of ${effectiveMaxColors} colors.`);
+        const quantResult = quantizeImage(current, effectiveMaxColors, fixedPalette);
         current = quantResult.quantized;
         colorsUsed = quantResult.colorsUsed;
     }
@@ -697,9 +700,9 @@ export async function processImage({
     }
 
     // 6. Optional post-downscale quantization
-    if (quantizeAfter && maxColors < 256) {
+    if (quantizeAfter && effectiveMaxColors < 256) {
         logger.log('Post-downscale quantization...');
-        const quantResult = quantizeImage(current, maxColors, fixedPalette);
+        const quantResult = quantizeImage(current, effectiveMaxColors, fixedPalette);
         current = quantResult.quantized;
         colorsUsed = quantResult.colorsUsed;
     }

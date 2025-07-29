@@ -185,10 +185,11 @@ function initializeTweakpane() {
     const settings = {
         // Pixel Art settings
         maxColors: 16,
+        autoColorCount: false,
         snapGrid: true,
         gridDetectionAlgorithm: 'auto-tiled', // 'auto-tiled', 'auto-legacy'
         downscaleMethod: 'dominant',
-        domMeanThreshold: 0.05,
+        domMeanThreshold: 0.15,
         cleanupMorph: true,
         cleanupJaggy: true,
         autoPixelSize: true,
@@ -239,22 +240,34 @@ function initializeTweakpane() {
         expanded: true
     });
 
-    mainPixelFolder.addBinding(settings, 'maxColors', {
+    const autoColorCountBinding = mainPixelFolder.addBinding(settings, 'autoColorCount', {
+        label: 'Auto-detect Colors'
+    });
+    
+    const maxColorsBinding = mainPixelFolder.addBinding(settings, 'maxColors', {
         label: 'Max Colors',
         min: 2,
         max: 256,
         step: 1
     });
     
+    maxColorsBinding.hidden = settings.autoColorCount;
+    autoColorCountBinding.on('change', (ev) => {
+        maxColorsBinding.hidden = ev.value;
+    });
+    
     mainPixelFolder.addBinding(settings, 'snapGrid', {
         label: 'Snap to Grid'
     });
 
-    mainPixelFolder.addBinding(settings, 'gridDetectionAlgorithm', {
-        label: 'Grid Detection',
+    mainPixelFolder.addBinding(settings, 'downscaleMethod', {
+        label: 'Downscaling Method',
         options: {
-            'Complex Grid': 'auto-tiled',
-            'Simple Grid': 'auto-legacy',
+            'dominant (picks the most frequent color in each block)': 'dominant',
+            'nearest (good for clean images)': 'nearest',
+            'content-adaptive (experimental)': 'content-adaptive',
+            'median (smooths noise)': 'median',
+            'mean (averages colors)': 'mean',
         }
     });
 
@@ -263,22 +276,21 @@ function initializeTweakpane() {
         expanded: false,
     });
     
-    // --- Downscaling Sub-folder ---
-    const downscalingFolder = advancedPixelFolder.addFolder({ title: 'Downscaling Method' });
+    // --- Grid Detection Sub-folder ---
+    const gridDetectionFolder = advancedPixelFolder.addFolder({ title: 'Grid Detection' });
 
-    downscalingFolder.addBinding(settings, 'downscaleMethod', {
-        label: 'Method',
+    gridDetectionFolder.addBinding(settings, 'gridDetectionAlgorithm', {
+        label: 'Algorithm',
         options: {
-            'dominant': 'dominant',
-            'median': 'median',
-            'mode': 'mode', 
-            'mean': 'mean',
-            'nearest': 'nearest',
-            'content-adaptive (experimental)': 'content-adaptive',
+            'Complex Grid': 'auto-tiled',
+            'Simple Grid': 'auto-legacy',
         }
     });
     
-    const domMeanThresholdBinding = downscalingFolder.addBinding(settings, 'domMeanThreshold', {
+    // --- Downscaling Threshold Sub-folder ---
+    const downscalingThresholdFolder = advancedPixelFolder.addFolder({ title: 'Downscaling Threshold' });
+
+    const domMeanThresholdBinding = downscalingThresholdFolder.addBinding(settings, 'domMeanThreshold', {
         label: 'Dominant Threshold',
         min: 0.01,
         max: 0.5,
@@ -286,8 +298,13 @@ function initializeTweakpane() {
     });
     
     domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(settings.downscaleMethod);
-    downscalingFolder.children[0].on('change', (ev) => {
-        domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(ev.value);
+    // Add listener to main settings downscale method
+    mainPixelFolder.children.forEach(child => {
+        if (child.label === 'Downscaling Method') {
+            child.on('change', (ev) => {
+                domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(ev.value);
+            });
+        }
     });
     
     // --- Manual Pixel Size Sub-folder ---
