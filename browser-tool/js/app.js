@@ -2,7 +2,7 @@
 // Main application file
 
 // Enable debug logging
-window.DEBUG_PIXEL_PROCESSOR = true;
+window.DEBUG_PIXEL_PROCESSOR = false;
 
 // Import dependencies
 import unfake from '../lib/index.js';
@@ -60,6 +60,46 @@ function initializeApp() {
     
     // Initialize magnifier
     initializeMagnifier();
+    
+    // Load magnifier state
+    const magnifierEnabled = localStorage.getItem('unfake-magnifier-enabled') === 'true';
+    console.log('Loading magnifier state:', magnifierEnabled);
+    
+    if (magnifierEnabled && appState.magnifier) {
+        appState.magnifier.activate();
+        elements.magnifierToggle.classList.add('active');
+        elements.magnifierToggle.textContent = '🔍';
+        elements.magnifierToggle.title = 'Magnifier active - hover over images';
+        console.log('Magnifier activated');
+    } else {
+        // Ensure magnifier is deactivated and UI shows correct state
+        if (appState.magnifier) {
+            appState.magnifier.deactivate();
+        }
+        elements.magnifierToggle.classList.remove('active');
+        elements.magnifierToggle.textContent = '🔍';
+        elements.magnifierToggle.title = 'Toggle magnifier';
+        console.log('Magnifier deactivated');
+    }
+    
+    // Load magnifier settings
+    const savedZoom = localStorage.getItem('unfake-magnifier-zoom');
+    const savedSize = localStorage.getItem('unfake-magnifier-size');
+    if (savedZoom && appState.magnifier) {
+        appState.magnifier.setZoomLevel(parseInt(savedZoom));
+        if (window.appSettings) {
+            window.appSettings.magnifierZoom = parseInt(savedZoom);
+        }
+    }
+    if (savedSize && appState.magnifier) {
+        appState.magnifier.setSize(parseInt(savedSize));
+        if (window.appSettings) {
+            window.appSettings.magnifierSize = parseInt(savedSize);
+        }
+    }
+    
+    // Load presets
+    loadPresets();
     
     // Bind event listeners
     bindEvents();
@@ -121,6 +161,9 @@ function setModeFromHash() {
         // Обновляем хинт под оригиналом при смене режима
         updateOriginalImageHint();
     }
+    
+    // Reload presets for the new mode
+    loadPresets();
 }
 
 // Cache DOM elements for performance
@@ -154,7 +197,12 @@ function cacheElements() {
         tweakpaneContainer: document.getElementById('tweakpane-container'),
         
         // Result settings
-        resultTweakpaneContainer: document.getElementById('result-tweakpane-container')
+        resultTweakpaneContainer: document.getElementById('result-tweakpane-container'),
+        
+        // Preset controls
+        presetSelector: document.getElementById('preset-selector'),
+        savePresetBtn: document.getElementById('save-preset-btn'),
+        deletePresetBtn: document.getElementById('delete-preset-btn')
     };
 }
 
@@ -504,6 +552,8 @@ function initializeTweakpane() {
         if (appState.magnifier) {
             appState.magnifier.setZoomLevel(ev.value);
         }
+        // Save magnifier settings
+        localStorage.setItem('unfake-magnifier-zoom', ev.value);
     });
     
     magnifierFolder.addBinding(settings, 'magnifierSize', {
@@ -515,6 +565,8 @@ function initializeTweakpane() {
         if (appState.magnifier) {
             appState.magnifier.setSize(ev.value);
         }
+        // Save magnifier settings
+        localStorage.setItem('unfake-magnifier-size', ev.value);
     });
     
     magnifierFolder.addBinding(settings, 'magnifierShowCrosshair', {
@@ -869,6 +921,11 @@ function bindEvents() {
     elements.downloadBtn.addEventListener('click', () => handleDownload(false));
     elements.downloadScaledBtn.addEventListener('click', () => handleDownload(true));
     
+    // Preset controls
+    elements.presetSelector.addEventListener('change', handlePresetChange);
+    elements.savePresetBtn.addEventListener('click', handleSavePreset);
+    elements.deletePresetBtn.addEventListener('click', handleDeletePreset);
+    
     // Paste from clipboard
     document.addEventListener('paste', handlePaste);
 
@@ -899,12 +956,17 @@ function handleMagnifierToggle() {
     if (!appState.magnifier) return;
     
     const isActive = appState.magnifier.isActive;
+    console.log('Toggling magnifier, current state:', isActive);
     
     if (isActive) {
         appState.magnifier.deactivate();
         elements.magnifierToggle.classList.remove('active');
         elements.magnifierToggle.textContent = '🔍';
         elements.magnifierToggle.title = 'Toggle magnifier';
+        
+        // Save magnifier state
+        localStorage.setItem('unfake-magnifier-enabled', 'false');
+        console.log('Magnifier deactivated and saved as disabled');
     } else {
         // Check if we have any image to magnify
         const originalImage = elements.originalImage;
@@ -920,6 +982,10 @@ function handleMagnifierToggle() {
         elements.magnifierToggle.classList.add('active');
         elements.magnifierToggle.textContent = '🔍';
         elements.magnifierToggle.title = 'Magnifier active - hover over images';
+        
+        // Save magnifier state
+        localStorage.setItem('unfake-magnifier-enabled', 'true');
+        console.log('Magnifier activated and saved as enabled');
     }
 }
 
@@ -1722,4 +1788,280 @@ function updateMainTitle() {
     } else {
         titleEl.textContent = 'unfake.js - Vectorize Mode';
     }
+}
+
+// Preset management functions
+function loadPresets() {
+    const presets = JSON.parse(localStorage.getItem('unfake-presets') || '{}');
+    
+    // Migration: convert old single selected preset to mode-specific keys
+    const oldSelectedPreset = localStorage.getItem('unfake-selected-preset');
+    if (oldSelectedPreset) {
+        // Check if old preset exists and is for current mode
+        if (presets[oldSelectedPreset] && presets[oldSelectedPreset].mode === appState.mode) {
+            localStorage.setItem(`unfake-selected-preset-${appState.mode}`, oldSelectedPreset);
+        }
+        // Remove old key
+        localStorage.removeItem('unfake-selected-preset');
+    }
+    
+    const selectedPreset = localStorage.getItem(`unfake-selected-preset-${appState.mode}`) || '';
+    
+    // Populate preset selector with only presets for current mode
+    elements.presetSelector.innerHTML = '<option value="">Default</option>';
+    
+    // Filter presets by current mode
+    Object.keys(presets).forEach(presetName => {
+        const preset = presets[presetName];
+        if (preset.mode === appState.mode) {
+            const option = document.createElement('option');
+            option.value = presetName;
+            option.textContent = presetName;
+            if (presetName === selectedPreset) {
+                option.selected = true;
+            }
+            elements.presetSelector.appendChild(option);
+        }
+    });
+    
+    // Check if selected preset is still valid for current mode
+    if (selectedPreset && presets[selectedPreset]) {
+        const selectedPresetData = presets[selectedPreset];
+        if (selectedPresetData.mode !== appState.mode) {
+            // Selected preset is for different mode, clear selection
+            localStorage.removeItem(`unfake-selected-preset-${appState.mode}`);
+            elements.presetSelector.value = '';
+            // Reset to default settings for new mode
+            resetToDefaultSettings();
+            console.log(`Preset "${selectedPreset}" is for different mode, resetting to default`);
+        } else {
+            // Load selected preset if it's for current mode
+            loadPreset(selectedPreset);
+            console.log(`Loaded preset "${selectedPreset}" for ${appState.mode} mode`);
+        }
+    } else {
+        // No valid preset selected, reset to default
+        resetToDefaultSettings();
+        console.log(`No preset selected for ${appState.mode} mode, using default settings`);
+    }
+    
+    // Update delete button visibility
+    updateDeleteButtonVisibility();
+}
+
+function savePreset(name) {
+    if (!name || !name.trim()) return;
+    
+    const presets = JSON.parse(localStorage.getItem('unfake-presets') || '{}');
+    const currentSettings = window.appSettings;
+    
+    // Save only settings for current mode
+    const presetData = {
+        mode: appState.mode,
+        settings: {}
+    };
+    
+    if (appState.mode === 'pixel') {
+        // Save pixel art settings
+        presetData.settings = {
+            maxColors: currentSettings.maxColors,
+            autoColorCount: currentSettings.autoColorCount,
+            snapGrid: currentSettings.snapGrid,
+            gridDetectionAlgorithm: currentSettings.gridDetectionAlgorithm,
+            downscaleMethod: currentSettings.downscaleMethod,
+            domMeanThreshold: currentSettings.domMeanThreshold,
+            cleanupMorph: currentSettings.cleanupMorph,
+            cleanupJaggy: currentSettings.cleanupJaggy,
+            autoPixelSize: currentSettings.autoPixelSize,
+            pixelSize: currentSettings.pixelSize,
+            alphaThreshold: currentSettings.alphaThreshold,
+            enableAlphaBinarization: currentSettings.enableAlphaBinarization
+        };
+    } else {
+        // Save vector settings
+        presetData.settings = {
+            preProcess: currentSettings.preProcess,
+            preProcessFilter: currentSettings.preProcessFilter,
+            preProcessValue: currentSettings.preProcessValue,
+            preProcessMorphology: currentSettings.preProcessMorphology,
+            quantize: currentSettings.quantize,
+            quantizeAuto: currentSettings.quantizeAuto,
+            numberofcolors: currentSettings.numberofcolors,
+            postProcess: currentSettings.postProcess,
+            postProcessFilter: currentSettings.postProcessFilter,
+            postProcessValue: currentSettings.postProcessValue,
+            ltres: currentSettings.ltres,
+            qtres: currentSettings.qtres,
+            pathomit: currentSettings.pathomit,
+            rightangleenhance: currentSettings.rightangleenhance,
+            strokewidth: currentSettings.strokewidth,
+            blurradius: currentSettings.blurradius,
+            blurdelta: currentSettings.blurdelta,
+            linefilter: currentSettings.linefilter,
+            roundcoords: currentSettings.roundcoords,
+            viewbox: currentSettings.viewbox
+        };
+    }
+    
+    presets[name] = presetData;
+    localStorage.setItem('unfake-presets', JSON.stringify(presets));
+    
+    // Update preset selector
+    loadPresets();
+    
+    // Select the newly saved preset and save it for current mode
+    elements.presetSelector.value = name;
+    localStorage.setItem(`unfake-selected-preset-${appState.mode}`, name);
+    
+    updateDeleteButtonVisibility();
+}
+
+function loadPreset(presetName) {
+    if (!presetName) return;
+    
+    const presets = JSON.parse(localStorage.getItem('unfake-presets') || '{}');
+    const preset = presets[presetName];
+    
+    if (!preset || preset.mode !== appState.mode) return;
+    
+    const currentSettings = window.appSettings;
+    
+    // Apply preset settings
+    Object.keys(preset.settings).forEach(key => {
+        if (currentSettings.hasOwnProperty(key)) {
+            currentSettings[key] = preset.settings[key];
+        }
+    });
+    
+    // Refresh Tweakpane to show new values
+    if (window.appPanes && window.appPanes[appState.mode]) {
+        window.appPanes[appState.mode].refresh();
+    }
+}
+
+function deletePreset(presetName) {
+    if (!presetName) return;
+    
+    if (!confirm(`Are you sure you want to delete preset "${presetName}"?`)) return;
+    
+    const presets = JSON.parse(localStorage.getItem('unfake-presets') || '{}');
+    delete presets[presetName];
+    localStorage.setItem('unfake-presets', JSON.stringify(presets));
+    
+    // Clear selection if deleted preset was selected for current mode
+    const selectedPreset = localStorage.getItem(`unfake-selected-preset-${appState.mode}`);
+    if (selectedPreset === presetName) {
+        localStorage.removeItem(`unfake-selected-preset-${appState.mode}`);
+        elements.presetSelector.value = '';
+    }
+    
+    loadPresets();
+}
+
+function updateDeleteButtonVisibility() {
+    const hasSelectedPreset = elements.presetSelector.value && elements.presetSelector.value !== '';
+    elements.deletePresetBtn.style.display = hasSelectedPreset ? 'inline-flex' : 'none';
+}
+
+// Event handlers for presets
+function handlePresetChange() {
+    const selectedPreset = elements.presetSelector.value;
+    console.log(`Preset changed to: "${selectedPreset}" for ${appState.mode} mode`);
+    
+    if (selectedPreset) {
+        loadPreset(selectedPreset);
+        localStorage.setItem(`unfake-selected-preset-${appState.mode}`, selectedPreset);
+        console.log(`Saved "${selectedPreset}" as selected preset for ${appState.mode} mode`);
+    } else {
+        // Reset to default settings
+        resetToDefaultSettings();
+        localStorage.removeItem(`unfake-selected-preset-${appState.mode}`);
+        console.log(`Reset to default settings for ${appState.mode} mode`);
+    }
+    
+    updateDeleteButtonVisibility();
+}
+
+function handleSavePreset() {
+    const name = prompt('Enter preset name:');
+    if (name && name.trim()) {
+        savePreset(name.trim());
+    }
+}
+
+function handleDeletePreset() {
+    const selectedPreset = elements.presetSelector.value;
+    if (selectedPreset) {
+        deletePreset(selectedPreset);
+    }
+}
+
+function resetToDefaultSettings() {
+    // Reset to default values (you can customize these)
+    const defaultSettings = {
+        // Pixel Art defaults
+        maxColors: 16,
+        autoColorCount: false,
+        snapGrid: true,
+        gridDetectionAlgorithm: 'auto-tiled',
+        downscaleMethod: 'dominant',
+        domMeanThreshold: 0.15,
+        cleanupMorph: true,
+        cleanupJaggy: true,
+        autoPixelSize: true,
+        pixelSize: 4,
+        alphaThreshold: 128,
+        enableAlphaBinarization: true,
+        
+        // Vector defaults
+        preProcess: true,
+        preProcessFilter: 'bilateral',
+        preProcessValue: 30,
+        preProcessMorphology: false,
+        quantize: true,
+        quantizeAuto: true,
+        postProcess: true,
+        postProcessFilter: 'median',
+        postProcessValue: 3,
+        numberofcolors: 16,
+        ltres: 2,
+        qtres: 2,
+        pathomit: 30,
+        rightangleenhance: true,
+        strokewidth: 1.5,
+        blurradius: 0,
+        blurdelta: 20,
+        linefilter: true,
+        roundcoords: 2,
+        viewbox: true
+    };
+    
+    const currentSettings = window.appSettings;
+    
+    // Update settings object with default values
+    Object.keys(defaultSettings).forEach(key => {
+        if (currentSettings.hasOwnProperty(key)) {
+            currentSettings[key] = defaultSettings[key];
+        }
+    });
+    
+    // Force Tweakpane to update by recreating it completely
+    if (window.appPanes && window.appPanes[appState.mode]) {
+        const currentPane = window.appPanes[appState.mode];
+        const container = currentPane.element.parentNode;
+        
+        // Destroy current pane
+        currentPane.dispose();
+        
+        // Clear container
+        container.innerHTML = '';
+        
+        // Recreate pane by calling initializeTweakpane again
+        initializeTweakpane();
+        
+        // Update pane visibility
+        updateSettingsVisibility();
+    }
+    
+    console.log('Settings reset to default values');
 } 
