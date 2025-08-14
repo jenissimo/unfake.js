@@ -1606,35 +1606,17 @@ async function copyPixelArt() {
         throw new Error('No image data available');
     }
 
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-    
-    // Copy to clipboard using Clipboard API
-    if (navigator.clipboard && navigator.clipboard.write) {
-        try {
-            await navigator.clipboard.write([
-                new ClipboardItem({
-                    'image/png': blob
-                })
-            ]);
-        } catch (error) {
-            // Fallback: try to copy as data URL
-            const dataUrl = canvas.toDataURL();
-            await navigator.clipboard.writeText(dataUrl);
-        }
-    } else {
-        // Fallback for browsers without Clipboard API
-        const dataUrl = canvas.toDataURL();
-        const textArea = document.createElement('textarea');
-        textArea.value = dataUrl;
-        document.body.appendChild(textArea);
-        textArea.select();
-        try {
-            document.execCommand('copy');
-        } catch (err) {
-            throw new Error('Copy failed: ' + err.message);
-        } finally {
-            document.body.removeChild(textArea);
-        }
+    try {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        await navigator.clipboard.write([
+            new ClipboardItem({
+                'image/png': blob
+            })
+        ]);
+    } catch (error) {
+        console.error('Clipboard API failed for image copy:', error);
+        alert('Automatic copy failed due to browser restrictions. Please right-click the image and select "Copy Image".');
+        throw new Error('User was instructed to copy image manually.');
     }
 }
 
@@ -1644,37 +1626,45 @@ async function copyVector() {
         throw new Error('No SVG data available');
     }
     
-    // Copy SVG text to clipboard
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        try {
-            await navigator.clipboard.writeText(appState.processedImage[appState.mode].svg);
-        } catch (error) {
-            // Fallback for browsers with restricted clipboard access
-            const textArea = document.createElement('textarea');
-            textArea.value = appState.processedImage[appState.mode].svg;
-            document.body.appendChild(textArea);
-            textArea.select();
-            try {
-                document.execCommand('copy');
-            } catch (err) {
-                throw new Error('Copy failed: ' + err.message);
-            } finally {
-                document.body.removeChild(textArea);
-            }
+    const svgText = appState.processedImage[appState.mode].svg;
+    let success = false;
+
+    // Try modern async API first
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(svgText);
+            success = true;
         }
-    } else {
-        // Fallback for browsers without Clipboard API
+    } catch (err) {
+        console.warn('Async clipboard write failed, trying fallback:', err);
+    }
+
+    // Fallback to execCommand if modern API failed or doesn't exist
+    if (!success) {
         const textArea = document.createElement('textarea');
-        textArea.value = appState.processedImage[appState.mode].svg;
+        textArea.value = svgText;
+        textArea.style.position = 'fixed';
+        textArea.style.top = '-9999px';
+        textArea.style.left = '-9999px';
         document.body.appendChild(textArea);
+        textArea.focus();
         textArea.select();
+
         try {
-            document.execCommand('copy');
+            success = document.execCommand('copy');
         } catch (err) {
-            throw new Error('Copy failed: ' + err.message);
+            console.warn('execCommand copy failed:', err);
         } finally {
             document.body.removeChild(textArea);
         }
+    }
+
+    // If all programmatic methods failed, instruct user to copy manually.
+    if (!success) {
+        alert('Automatic copy failed due to browser restrictions. A prompt will appear with the text to copy.');
+        window.prompt('Please press Ctrl+C to copy the SVG code:', svgText);
+        // Throw an error to prevent the "Copied!" message from appearing.
+        throw new Error('All copy methods failed, user was prompted to copy manually.');
     }
 }
 
