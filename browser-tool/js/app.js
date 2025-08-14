@@ -522,9 +522,7 @@ function initializeTweakpane() {
     }).on('change', (ev) => {
         if (appState.magnifier) {
             appState.magnifier.options.showCrosshair = ev.value;
-            if (appState.magnifier.isActive) {
-                appState.magnifier.updateMagnification();
-            }
+            appState.magnifier.updateCrosshair();
         }
     });
     
@@ -575,9 +573,7 @@ function initializeTweakpane() {
     }).on('change', (ev) => {
         if (appState.magnifier) {
             appState.magnifier.options.showCrosshair = ev.value;
-            if (appState.magnifier.isActive) {
-                appState.magnifier.updateMagnification();
-            }
+            appState.magnifier.updateCrosshair();
         }
     });
     
@@ -657,19 +653,9 @@ function handlePaletteChange(newPaletteObj) {
     const processedImage = appState.processedImage[appState.mode];
     if (!processedImage || !processedImage.palette) return;
 
-    // Use the original palette for creating the color map
-    const originalPalette = appState.originalPalette[appState.mode] || processedImage.palette;
-
-    // Build a map of old hex -> new hex, comparing normalized values
-    const hexColorMap = new Map();
-    originalPalette.forEach((oldColor, index) => {
-        const key = `color${index + 1}`;
-        const newColor = newPaletteObj[key];
-        if (oldColor && newColor && oldColor.toLowerCase() !== newColor.toLowerCase()) {
-            hexColorMap.set(oldColor.toLowerCase(), newColor.toLowerCase());
-        }
-    });
-
+    // Get the current palette state from the UI
+    const currentPalette = Object.values(newPaletteObj);
+    
     if (appState.mode === 'pixel') {
         const canvas = processedImage.canvas;
         const originalImageData = processedImage.originalImageData;
@@ -681,19 +667,18 @@ function handlePaletteChange(newPaletteObj) {
         try {
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-            // This map translates any color from the original image to its final replacement color
-            const finalColorMap = new Map();
-
-            // Pre-populate the finalColorMap with replacements
-            originalPalette.forEach((hex) => {
-                const oldHex = hex.toLowerCase();
-                const newHex = hexColorMap.get(oldHex);
-                if (newHex) {
-                    finalColorMap.set(oldHex, hexToRgba(newHex));
+            // Create a map from original palette indices to new colors
+            const colorMap = new Map();
+            const originalPalette = appState.originalPalette[appState.mode];
+            
+            originalPalette.forEach((originalColor, index) => {
+                const newColor = currentPalette[index];
+                if (newColor && originalColor.toLowerCase() !== newColor.toLowerCase()) {
+                    colorMap.set(originalColor.toLowerCase(), newColor.toLowerCase());
                 }
             });
 
-            // We work from the original data every time to apply the full new palette
+            // Apply color changes to the canvas
             const originalData = originalImageData.data;
             const newData = new Uint8ClampedArray(originalData.length);
             
@@ -709,20 +694,29 @@ function handlePaletteChange(newPaletteObj) {
                 }
                 
                 const currentHex = rgbaToHex({ r, g, b, a }).toLowerCase();
+                const newColor = colorMap.get(currentHex);
                 
-                let finalRgba = finalColorMap.get(currentHex);
-
-                if (finalRgba === undefined) {
-                    // This color wasn't in the original palette but is in the image.
-                    // This can happen with anti-aliasing. We keep it as is.
-                    finalColorMap.set(currentHex, { r, g, b, a });
-                    finalRgba = { r, g, b, a };
+                if (newColor) {
+                    const newRgba = hexToRgba(newColor);
+                    if (newRgba) {
+                        newData[i] = newRgba.r;
+                        newData[i + 1] = newRgba.g;
+                        newData[i + 2] = newRgba.b;
+                        newData[i + 3] = newRgba.a;
+                    } else {
+                        // Invalid color, keep original
+                        newData[i] = r;
+                        newData[i + 1] = g;
+                        newData[i + 2] = b;
+                        newData[i + 3] = a;
+                    }
+                } else {
+                    // Keep original color if no replacement specified
+                    newData[i] = r;
+                    newData[i + 1] = g;
+                    newData[i + 2] = b;
+                    newData[i + 3] = a;
                 }
-                
-                newData[i] = finalRgba.r;
-                newData[i + 1] = finalRgba.g;
-                newData[i + 2] = finalRgba.b;
-                newData[i + 3] = finalRgba.a;
             }
             
             const newImageData = new ImageData(newData, originalImageData.width, originalImageData.height);
@@ -739,12 +733,13 @@ function handlePaletteChange(newPaletteObj) {
         }
         
         let currentSvg = processedImage.originalSvg;
-        const newPalette = Object.values(newPaletteObj);
+        const originalPalette = appState.originalPalette[appState.mode];
 
-        appState.originalPalette[appState.mode].forEach((oldHex, index) => {
-            const newHex = newPalette[index];
+        // Replace colors in SVG
+        originalPalette.forEach((oldHex, index) => {
+            const newHex = currentPalette[index];
             
-            if (oldHex && newHex) {
+            if (oldHex && newHex && oldHex.toLowerCase() !== newHex.toLowerCase()) {
                 const oldRgba = hexToRgba(oldHex);
                 const newRgba = hexToRgba(newHex);
 
@@ -755,6 +750,8 @@ function handlePaletteChange(newPaletteObj) {
                     const finalRegex = new RegExp(`(fill|stroke)="${oldColorRegexPart}"`, 'gi');
                     
                     currentSvg = currentSvg.replace(finalRegex, `$1="${newRgbString}"`);
+                } else {
+                    console.warn(`Invalid color format: oldHex=${oldHex}, newHex=${newHex}`);
                 }
             }
         });
@@ -763,9 +760,8 @@ function handlePaletteChange(newPaletteObj) {
         elements.resultArea.querySelector('.result-svg').innerHTML = currentSvg;
     }
 
-    // Update the master palette state for the next change
-    processedImage.palette = Object.values(newPaletteObj);
-    appState.originalPalette[appState.mode] = [...processedImage.palette];
+    // Update the processed image palette to reflect the new colors
+    processedImage.palette = currentPalette;
 }
 
 
@@ -1431,7 +1427,8 @@ function updatePaletteInTweakpane(palette) {
     
     // Add a single listener to the folder
     window.handlePaletteFolderChange = (ev) => {
-        // The event value from a folder is the complete object
+        // The event value from a folder is the complete object, but it's easier
+        // to just use the paletteObj that Tweakpane mutates directly.
         handlePaletteChange(paletteObj);
     };
     paletteFolder.on('change', window.handlePaletteFolderChange);
@@ -1512,13 +1509,31 @@ async function copyPixelArt() {
     
     // Copy to clipboard using Clipboard API
     if (navigator.clipboard && navigator.clipboard.write) {
-        await navigator.clipboard.write([
-            new ClipboardItem({
-                'image/png': blob
-            })
-        ]);
+        try {
+            await navigator.clipboard.write([
+                new ClipboardItem({
+                    'image/png': blob
+                })
+            ]);
+        } catch (error) {
+            // Fallback: try to copy as data URL
+            const dataUrl = canvas.toDataURL();
+            await navigator.clipboard.writeText(dataUrl);
+        }
     } else {
-        throw new Error('Clipboard API not supported');
+        // Fallback for browsers without Clipboard API
+        const dataUrl = canvas.toDataURL();
+        const textArea = document.createElement('textarea');
+        textArea.value = dataUrl;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+            document.execCommand('copy');
+        } catch (err) {
+            throw new Error('Copy failed: ' + err.message);
+        } finally {
+            document.body.removeChild(textArea);
+        }
     }
 }
 
@@ -1530,9 +1545,35 @@ async function copyVector() {
     
     // Copy SVG text to clipboard
     if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(appState.processedImage[appState.mode].svg);
+        try {
+            await navigator.clipboard.writeText(appState.processedImage[appState.mode].svg);
+        } catch (error) {
+            // Fallback for browsers with restricted clipboard access
+            const textArea = document.createElement('textarea');
+            textArea.value = appState.processedImage[appState.mode].svg;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+            } catch (err) {
+                throw new Error('Copy failed: ' + err.message);
+            } finally {
+                document.body.removeChild(textArea);
+            }
+        }
     } else {
-        throw new Error('Clipboard API not supported');
+        // Fallback for browsers without Clipboard API
+        const textArea = document.createElement('textarea');
+        textArea.value = appState.processedImage[appState.mode].svg;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+            document.execCommand('copy');
+        } catch (err) {
+            throw new Error('Copy failed: ' + err.message);
+        } finally {
+            document.body.removeChild(textArea);
+        }
     }
 }
 

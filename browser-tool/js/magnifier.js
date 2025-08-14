@@ -174,6 +174,13 @@ class Magnifier {
         return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
     }
     
+    // Update crosshair visibility
+    updateCrosshair() {
+        if (this.crosshair) {
+            this.crosshair.style.display = this.options.showCrosshair ? 'block' : 'none';
+        }
+    }
+
     // Update magnified content
     updateMagnification() {
         if (!this.targetImage || this.isDestroyed) return;
@@ -190,6 +197,9 @@ class Magnifier {
         }
 
         this.element.style.display = 'block';
+
+        // Update crosshair visibility
+        this.updateCrosshair();
 
         const setBackground = (imageElement, srcOverride = null) => {
             if (!imageElement && !srcOverride) return;
