@@ -874,7 +874,6 @@ function initializeMagnifier() {
         crispPixels: true,
         debug: false
     });
-    handleMagnifierToggle();
     console.log('Magnifier initialized');
 }
 
