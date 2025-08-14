@@ -27,6 +27,8 @@ class Magnifier {
         this.svgImageCache = new WeakMap();
         this.imgDataURLCache = new WeakMap();
         this.isDestroyed = false;
+        this.rafScheduled = false;
+        this.isUpdating = false;
         
         this.init();
     }
@@ -119,10 +121,24 @@ class Magnifier {
     
     // Handle mouse movement
     handleMouseMove(e) {
-        if (!this.isActive) return;
-        
+        if (!this.isActive || this.isUpdating) return;
+
+        this.mouseX = e.clientX;
+        this.mouseY = e.clientY;
+
+        // Use rAF to avoid performance issues
+        if (!this.rafScheduled) {
+            this.rafScheduled = true;
+            window.requestAnimationFrame(() => {
+                this.updateOnMouseMove();
+                this.rafScheduled = false;
+            });
+        }
+    }
+
+    updateOnMouseMove() {
         // Find image under cursor
-        const imageUnderCursor = this.findImageUnderCursor(e.clientX, e.clientY);
+        const imageUnderCursor = this.findImageUnderCursor(this.mouseX, this.mouseY);
         
         if (!imageUnderCursor) {
             // No image under cursor, hide magnifier
@@ -140,9 +156,6 @@ class Magnifier {
         
         // Show magnifier if it was hidden
         this.element.style.display = 'block';
-        
-        this.mouseX = e.clientX;
-        this.mouseY = e.clientY;
         
         this.updateMagnification();
     }
@@ -183,119 +196,115 @@ class Magnifier {
 
     // Update magnified content
     updateMagnification() {
-        if (!this.targetImage || this.isDestroyed) return;
+        if (!this.targetImage || this.isDestroyed || this.isUpdating) return;
 
-        const targetRect = this.targetImage.getBoundingClientRect();
-        const tagName = this.targetImage.tagName.toLowerCase();
-        const isSVG = tagName === 'svg';
-        const zoom = this.options.zoomLevel;
+        const setBackgroundPosition = () => {
+            const targetRect = this.targetImage.getBoundingClientRect();
+            const zoom = this.options.zoomLevel;
 
-        // Check if mouse is within the target element's bounds
-        if (!this.isPointInElement(this.mouseX, this.mouseY, this.targetImage)) {
-            this.element.style.display = 'none';
+            const cursorX_rel = this.mouseX - targetRect.left;
+            const cursorY_rel = this.mouseY - targetRect.top;
+
+            const bgPosX = -(cursorX_rel * zoom - this.options.size / 2);
+            const bgPosY = -(cursorY_rel * zoom - this.options.size / 2);
+
+            this.element.style.backgroundPosition = `${bgPosX}px ${bgPosY}px`;
+            this.updatePosition();
+        };
+
+        // If data URL is already cached, just update the position
+        if (this.imgDataURLCache.has(this.targetImage) || this.svgImageCache.has(this.targetImage)) {
+            setBackgroundPosition();
             return;
         }
 
-        this.element.style.display = 'block';
+        // --- Data URL generation (only runs once per image) ---
+        this.isUpdating = true;
+        this.element.style.cursor = 'wait';
 
-        // Update crosshair visibility
-        this.updateCrosshair();
+        const tagName = this.targetImage.tagName.toLowerCase();
+        const isSVG = tagName === 'svg';
+        const zoom = this.options.zoomLevel;
+        const targetRect = this.targetImage.getBoundingClientRect();
 
         const setBackground = (imageElement, srcOverride = null) => {
-            if (!imageElement && !srcOverride) return;
-
-            // For IMG elements, naturalWidth is on the element itself.
-            // For SVGs converted to Image, it's on the new Image object.
-            const naturalWidth = imageElement?.naturalWidth;
-            const naturalHeight = imageElement?.naturalHeight;
-
-            if (!srcOverride && (!naturalWidth || !naturalHeight)) return;
+            if (!imageElement && !srcOverride) {
+                this.isUpdating = false;
+                this.element.style.cursor = 'default';
+                return;
+            }
 
             const bgSizeX = targetRect.width * zoom;
             const bgSizeY = targetRect.height * zoom;
             this.element.style.backgroundSize = `${bgSizeX}px ${bgSizeY}px`;
             
             this.element.style.imageRendering = this.options.crispPixels ? 'pixelated' : 'auto';
-
-            const cursorX_rel = this.mouseX - targetRect.left;
-            const cursorY_rel = this.mouseY - targetRect.top;
-            
-            const bgPosX = -(cursorX_rel * zoom - this.options.size / 2);
-            const bgPosY = -(cursorY_rel * zoom - this.options.size / 2);
-
-            this.element.style.backgroundPosition = `${bgPosX}px ${bgPosY}px`;
             
             const targetSrc = srcOverride || imageElement.src;
             if (targetSrc && this.element.style.backgroundImage !== `url("${targetSrc}")`) {
                 this.element.style.backgroundImage = `url("${targetSrc}")`;
             }
+            
+            setBackgroundPosition();
+            this.isUpdating = false;
+            this.element.style.cursor = 'default';
         };
 
         if (isSVG) {
-            let cachedImg = this.svgImageCache.get(this.targetImage);
-            if (cachedImg?.complete && cachedImg.naturalWidth > 0) {
+            let cachedImg = new Image();
+            cachedImg.loading = true;
+            this.svgImageCache.set(this.targetImage, cachedImg);
+            
+            const svgString = new XMLSerializer().serializeToString(this.targetImage);
+            const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
+            
+            cachedImg.onload = () => {
                 setBackground(cachedImg);
-            } else if (!cachedImg || !cachedImg.loading) { // Check custom flag
-                const svgString = new XMLSerializer().serializeToString(this.targetImage);
-                const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
+            }
+            cachedImg.src = svgDataUrl;
+
+        } else { // Handles <img> and <canvas>
+            const isImg = tagName === 'img';
+            const isReady = isImg ? (this.targetImage.complete && this.targetImage.naturalWidth > 0) : true;
+
+            if (isReady) {
+                const canvas = document.createElement('canvas');
+                const sourceWidth = isImg ? this.targetImage.naturalWidth : this.targetImage.width;
+                const sourceHeight = isImg ? this.targetImage.naturalHeight : this.targetImage.height;
+
+                if (sourceWidth === 0 || sourceHeight === 0) {
+                    this.isUpdating = false;
+                    this.element.style.cursor = 'default';
+                    return;
+                }
+
+                canvas.width = sourceWidth;
+                canvas.height = sourceHeight;
                 
-                cachedImg = cachedImg || new Image();
-                cachedImg.loading = true; // Set flag
-                this.svgImageCache.set(this.targetImage, cachedImg);
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(this.targetImage, 0, 0);
                 
-                const currentTarget = this.targetImage;
-                cachedImg.onload = () => {
-                    cachedImg.loading = false;
-                    if (!this.isDestroyed && this.targetImage === currentTarget) {
+                try {
+                    const dataURL = canvas.toDataURL();
+                    this.imgDataURLCache.set(this.targetImage, dataURL);
+                    setBackground(null, dataURL);
+                } catch (e) {
+                    console.error("Magnifier: Could not generate data URL, falling back to src.", e);
+                    if (isImg) {
+                        setBackground(this.targetImage); // Fallback for tainted <img>
+                    }
+                    this.isUpdating = false;
+                    this.element.style.cursor = 'default';
+                }
+            } else if (isImg) {
+                this.targetImage.onload = () => {
+                    if(!this.isDestroyed) {
+                        this.isUpdating = false;
                         this.updateMagnification();
                     }
-                }
-                cachedImg.src = svgDataUrl;
-            }
-        } else { // Handles <img> and <canvas>
-            let dataURL = this.imgDataURLCache.get(this.targetImage);
-            if (dataURL) {
-                setBackground(null, dataURL);
-            } else {
-                const isImg = tagName === 'img';
-                const isReady = isImg ? (this.targetImage.complete && this.targetImage.naturalWidth > 0) : true; // Canvas is always "ready"
-
-                if (isReady) {
-                    const canvas = document.createElement('canvas');
-                    const sourceWidth = isImg ? this.targetImage.naturalWidth : this.targetImage.width;
-                    const sourceHeight = isImg ? this.targetImage.naturalHeight : this.targetImage.height;
-
-                    if (sourceWidth === 0 || sourceHeight === 0) return;
-
-                    canvas.width = sourceWidth;
-                    canvas.height = sourceHeight;
-                    
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(this.targetImage, 0, 0);
-                    
-                    try {
-                        dataURL = canvas.toDataURL();
-                        this.imgDataURLCache.set(this.targetImage, dataURL);
-                        setBackground(null, dataURL);
-                    } catch (e) {
-                        console.error("Magnifier: Could not generate data URL, falling back to src.", e);
-                        if (isImg) {
-                            setBackground(this.targetImage); // Fallback for tainted <img>
-                        }
-                    }
-                } else if (isImg) {
-                    // Image is not loaded yet, use src and wait for onload.
-                    this.targetImage.onload = () => {
-                        if(!this.isDestroyed) {
-                            this.updateMagnification();
-                        }
-                    };
-                    setBackground(this.targetImage);
-                }
+                };
             }
         }
-        
-        this.updatePosition();
     }
     
     // Clear cache for a specific image element
