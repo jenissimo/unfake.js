@@ -101,6 +101,46 @@
     border-color: var(--accent-secondary);
 }
 
+/* Support button */
+.support-btn {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--accent-orange);
+    color: white;
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+}
+
+.support-btn:hover {
+    background: var(--accent-orange);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-hover);
+}
+
+.support-btn:active {
+    transform: translateY(0);
+}
+
+/* Dark theme overrides for support button */
+[data-theme="dark"] .support-btn {
+    background: var(--accent-orange);
+    border-color: var(--accent-orange);
+    color: white;
+}
+
+[data-theme="dark"] .support-btn:hover {
+    background: var(--accent-orange);
+    box-shadow: var(--shadow-hover);
+}
+
 [data-theme="dark"] .download-btn {
     background: var(--bg-secondary);
     border-color: var(--border-color);
