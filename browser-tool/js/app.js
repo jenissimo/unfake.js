@@ -146,7 +146,7 @@ function setModeFromHash() {
 
     // Check if result for this mode is cached
     const cachedResult = appState.processedImage[appState.mode];
-    if (cachedResult) {
+    if (cachedResult && isValidResult(cachedResult, appState.mode)) {
         console.log(`Displaying cached result for ${appState.mode}`);
         displayResult(cachedResult);
         updateUI();
@@ -1307,8 +1307,23 @@ function displayResult(result) {
     } else {
         displayVectorResult(result);
     }
-    
+}
 
+// Check if cached result is valid for the current mode
+function isValidResult(result, mode) {
+    if (!result) return false;
+    
+    if (mode === 'pixel') {
+        // For pixel art, we need PNG data and palette
+        return result.png && result.palette && 
+               typeof result.png.byteLength !== 'undefined' &&
+               Array.isArray(result.palette);
+    } else if (mode === 'vector') {
+        // For vector, we need SVG data
+        return result.svg && typeof result.svg === 'string';
+    }
+    
+    return false;
 }
 
 // Display pixel art result
@@ -1319,9 +1334,23 @@ function displayPixelArtResult(result) {
         return;
     }
 
+    // Validate result structure
+    if (!result || !result.png || typeof result.png.byteLength === 'undefined') {
+        console.error('Invalid pixel art result:', result);
+        clearResultArea();
+        return;
+    }
+
+    // Validate palette
+    if (!result.palette || !Array.isArray(result.palette)) {
+        console.error('Invalid palette in result:', result.palette);
+        clearResultArea();
+        return;
+    }
+
     console.log('Displaying pixel art result:', result);
     console.log('PNG buffer size:', result.png.byteLength);
-    console.log('Palette size:', result.palette.length);
+    console.log('Palette size:', result.palette?.length || 'undefined');
     
     try {
         // Decode PNG and get raw RGBA pixel data to avoid color space issues with drawImage
@@ -1504,6 +1533,13 @@ function updatePaletteInTweakpane(palette) {
 
 // Display vector result
 function displayVectorResult(result) {
+    // Validate result structure
+    if (!result || !result.svg || typeof result.svg !== 'string') {
+        console.error('Invalid vector result:', result);
+        clearResultArea();
+        return;
+    }
+
     elements.resultArea.innerHTML = `
         <div class="result-svg">
             ${result.svg}
