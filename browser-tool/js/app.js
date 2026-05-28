@@ -1309,40 +1309,38 @@ async function handleProcess() {
     }
 }
 
+// Build the option object for unfake.processImage from the current settings.
+// Shared by Pixel Art mode and the "Pixel Art First" pre-pass of Layers mode so
+// the two can never drift — and so autoColorCount actually reaches the pipeline
+// in both (the Pixel Art pane exposes the toggle, but it used to be dropped here).
+function buildPixelArtOptions(settings) {
+    const manualScale = settings.autoPixelSize ? null : [settings.pixelSize, settings.pixelSize];
+    const [detectMethod, edgeDetectMethod] = settings.gridDetectionAlgorithm.split('-');
+    return {
+        file: appState.originalFile,
+        maxColors: settings.maxColors,
+        autoColorCount: settings.autoColorCount,
+        snapGrid: settings.snapGrid,
+        detectMethod,
+        edgeDetectMethod: edgeDetectMethod || 'tiled',
+        downscaleMethod: settings.downscaleMethod,
+        domMeanThreshold: settings.domMeanThreshold,
+        manualScale,
+        cleanup: {
+            morph: settings.cleanupMorph,
+            jaggy: settings.cleanupJaggy
+        },
+        alphaThreshold: settings.enableAlphaBinarization ? settings.alphaThreshold : null
+    };
+}
+
 // Process image using unfake.js
 async function processImage() {
     const settings = window.appSettings;
     try {
         if (appState.mode === 'pixel') {
             console.log('Processing pixel art with settings:', settings);
-            const manualScale = settings.autoPixelSize ? null : [settings.pixelSize, settings.pixelSize];
-            
-            const [detectMethod, edgeDetectMethod] = settings.gridDetectionAlgorithm.split('-');
-
-            console.log('Manual scale value:', manualScale);
-            if (manualScale) {
-                console.log(`Using manual pixel size: ${settings.pixelSize}×${settings.pixelSize}px`);
-            } else {
-                console.log('Using automatic scale detection');
-            }
-            if (['dominant', 'median', 'mode', 'mean'].includes(settings.downscaleMethod)) {
-                console.log(`Using ${settings.downscaleMethod} threshold: ${settings.domMeanThreshold} (${(settings.domMeanThreshold * 100).toFixed(1)}%)`);
-            }
-            return await unfake.processImage({
-                file: appState.originalFile,
-                maxColors: settings.maxColors,
-                snapGrid: settings.snapGrid,
-                detectMethod: detectMethod,
-                edgeDetectMethod: edgeDetectMethod || 'tiled',
-                downscaleMethod: settings.downscaleMethod,
-                domMeanThreshold: settings.domMeanThreshold,
-                manualScale: manualScale,
-                cleanup: {
-                    morph: settings.cleanupMorph,
-                    jaggy: settings.cleanupJaggy
-                },
-                alphaThreshold: settings.enableAlphaBinarization ? settings.alphaThreshold : null
-            });
+            return await unfake.processImage(buildPixelArtOptions(settings));
         } else if (appState.mode === 'vector') {
             console.log('Processing vector with settings:', settings);
             
@@ -1395,26 +1393,7 @@ async function processImage() {
             // If "Pixel Art First" is enabled, process with pixel art mode first
             if (settings.layersPixelArtFirst) {
                 console.log('Pre-processing with Pixel Art mode...');
-                const manualScale = settings.autoPixelSize ? null : [settings.pixelSize, settings.pixelSize];
-                const [detectMethod, edgeDetectMethod] = settings.gridDetectionAlgorithm.split('-');
-                
-                const pixelResult = await unfake.processImage({
-                    file: appState.originalFile,
-                    maxColors: settings.maxColors,
-                    autoColorCount: settings.autoColorCount,
-                    snapGrid: settings.snapGrid,
-                    detectMethod: detectMethod,
-                    edgeDetectMethod: edgeDetectMethod || 'tiled',
-                    downscaleMethod: settings.downscaleMethod,
-                    domMeanThreshold: settings.domMeanThreshold,
-                    manualScale: manualScale,
-                    cleanup: {
-                        morph: settings.cleanupMorph,
-                        jaggy: settings.cleanupJaggy
-                    },
-                    alphaThreshold: settings.enableAlphaBinarization ? settings.alphaThreshold : null
-                });
-                
+                const pixelResult = await unfake.processImage(buildPixelArtOptions(settings));
                 inputImageData = pixelResult.imageData;
                 console.log(`Pixel art pre-processing complete: ${inputImageData.width}x${inputImageData.height}`);
             }
@@ -1763,7 +1742,7 @@ function displayLayersResult(result) {
             if (result.manifest.options.source === 'imageData') {
                 info.push('Pixel Art First: Yes');
             }
-            if (result.manifest.options.detailsBoost !== 1.0) {
+            if (Math.abs(result.manifest.options.detailsBoost - 1) > 1e-6) {
                 info.push(`Details Boost: ${result.manifest.options.detailsBoost}x`);
             }
         }
