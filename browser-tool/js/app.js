@@ -5,7 +5,7 @@
 window.DEBUG_PIXEL_PROCESSOR = false;
 
 // Import dependencies
-import unfake from '../lib/index.js';
+import unfake, { MAX_COLORS } from '../lib/index.js';
 import { Pane } from 'tweakpane';
 import Magnifier from './magnifier.js';
 import { cvReady } from '../lib/utils.js';
@@ -303,7 +303,7 @@ function initializeTweakpane() {
     const maxColorsBinding = mainPixelFolder.addBinding(settings, 'maxColors', {
         label: 'Max Colors',
         min: 2,
-        max: 256,
+        max: MAX_COLORS, // top value = no color reduction
         step: 1
     });
     
