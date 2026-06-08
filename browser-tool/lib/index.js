@@ -5,6 +5,7 @@ import {
   processImage,
 } from './pixel.js';
 import { vectorizeImage } from './vector.js';
+import { extractLayers, extractMaskLayer, extractDetailsLayer } from './layers.js';
 import { 
   cvReady, 
   fileToImageData, 
@@ -27,6 +28,9 @@ import {
 export { 
   processImage, 
   vectorizeImage,
+  extractLayers,
+  extractMaskLayer,
+  extractDetailsLayer,
 };
 export { 
   cvReady, 
@@ -50,6 +54,7 @@ export {
 export default {
   processImage,
   vectorizeImage,
+  extractLayers,
   utils: {
     cvReady, 
     fileToImageData, 

@@ -12,18 +12,20 @@ import { cvReady } from '../lib/utils.js';
 
 // Global state
 let appState = {
-    mode: 'pixel', // 'pixel' or 'vector'
+    mode: 'pixel', // 'pixel', 'vector', or 'layers'
     originalImage: null,
     processedImage: {
         pixel: null,
-        vector: null
+        vector: null,
+        layers: null
     },
     isProcessing: false,
     opencvReady: false,
     magnifier: null,
     originalPalette: {
         pixel: null,
-        vector: null
+        vector: null,
+        layers: null
     } // Added for color replacement consistency
 };
 
@@ -123,7 +125,7 @@ function setModeFromHash() {
         return; // Already in the correct state
     }
 
-    if (!['pixel', 'vector'].includes(newMode)) {
+    if (!['pixel', 'vector', 'layers'].includes(newMode)) {
         appState.mode = 'pixel';
         window.location.hash = 'pixel'; // Correct invalid hash
     } else {
@@ -277,6 +279,12 @@ function initializeTweakpane() {
         magnifierShowCrosshair: true,
         magnifierCrispPixels: true,
         magnifierDebug: false,
+        
+        // Layers settings
+        layersPixelArtFirst: true,       // Pre-process with Pixel Art mode
+        layersAlphaThreshold: 1,         // Min alpha to consider visible (1-255)
+        layersBrightnessMethod: 'average', // 'average' or 'luminance'
+        layersDetailsBoost: 1.0,         // Details intensity multiplier (0.5-2.0)
         
         // Palette (will be populated dynamically)
         palette: []
@@ -648,11 +656,92 @@ function initializeTweakpane() {
         }
     });
     
+    // --- Layers Pane ---
+    const layersPane = new Pane({
+        container: elements.tweakpaneContainer
+    });
+    
+    // Pre-processing folder
+    const layersPreProcessFolder = layersPane.addFolder({
+        title: 'Pre-Processing',
+        expanded: true
+    });
+    
+    layersPreProcessFolder.addBinding(settings, 'layersPixelArtFirst', {
+        label: 'Pixel Art First'
+    });
+    
+    // Add a note about Pixel Art First
+    layersPreProcessFolder.addBlade({
+        view: 'text',
+        label: '',
+        value: 'When enabled, image is processed with Pixel Art mode settings before layer extraction.',
+        parse: (v) => v,
+        disabled: true
+    });
+    
+    // Main settings folder
+    const layersMainFolder = layersPane.addFolder({
+        title: 'Layer Settings',
+        expanded: true
+    });
+    
+    layersMainFolder.addBinding(settings, 'layersAlphaThreshold', {
+        label: 'Alpha Threshold',
+        min: 1,
+        max: 255,
+        step: 1
+    });
+    
+    layersMainFolder.addBinding(settings, 'layersBrightnessMethod', {
+        label: 'Brightness Method',
+        options: {
+            'Average (faster)': 'average',
+            'Luminance (accurate)': 'luminance'
+        }
+    });
+    
+    layersMainFolder.addBinding(settings, 'layersDetailsBoost', {
+        label: 'Details Boost',
+        min: 0.5,
+        max: 2.0,
+        step: 0.1
+    });
+
+    // Add magnifier folder to layers pane too
+    const layersMagnifierFolder = layersPane.addFolder({
+        title: 'Magnifier Settings',
+        expanded: false
+    });
+    
+    layersMagnifierFolder.addBinding(settings, 'magnifierZoom', {
+        label: 'Zoom Level',
+        min: 1,
+        max: 16,
+        step: 1
+    }).on('change', (ev) => {
+        if (appState.magnifier) {
+            appState.magnifier.setZoomLevel(ev.value);
+        }
+    });
+    
+    layersMagnifierFolder.addBinding(settings, 'magnifierSize', {
+        label: 'Size',
+        min: 100,
+        max: 400,
+        step: 10
+    }).on('change', (ev) => {
+        if (appState.magnifier) {
+            appState.magnifier.setSize(ev.value);
+        }
+    });
+
     // Store settings and pane references globally
     window.appSettings = settings;
     window.appPanes = {
         pixel: pixelPane,
-        vector: vectorPane
+        vector: vectorPane,
+        layers: layersPane
     };
     
     // Update pane visibility based on mode
@@ -851,13 +940,20 @@ function updateSettingsVisibility() {
     
     const pixelPane = window.appPanes.pixel;
     const vectorPane = window.appPanes.vector;
+    const layersPane = window.appPanes.layers;
     
     if (appState.mode === 'pixel') {
         pixelPane.element.style.display = 'block';
         vectorPane.element.style.display = 'none';
-    } else {
+        if (layersPane) layersPane.element.style.display = 'none';
+    } else if (appState.mode === 'vector') {
         pixelPane.element.style.display = 'none';
         vectorPane.element.style.display = 'block';
+        if (layersPane) layersPane.element.style.display = 'none';
+    } else if (appState.mode === 'layers') {
+        pixelPane.element.style.display = 'none';
+        vectorPane.element.style.display = 'none';
+        if (layersPane) layersPane.element.style.display = 'block';
     }
     
     // Magnifier settings are always visible (shared between modes)
@@ -1247,7 +1343,7 @@ async function processImage() {
                 },
                 alphaThreshold: settings.enableAlphaBinarization ? settings.alphaThreshold : null
             });
-        } else {
+        } else if (appState.mode === 'vector') {
             console.log('Processing vector with settings:', settings);
             
             const preProcessOptions = {
@@ -1286,6 +1382,50 @@ async function processImage() {
                 roundcoords: settings.roundcoords,
                 viewbox: settings.viewbox
             });
+        } else if (appState.mode === 'layers') {
+            console.log('Extracting layers with settings:', {
+                pixelArtFirst: settings.layersPixelArtFirst,
+                alphaThreshold: settings.layersAlphaThreshold,
+                brightnessMethod: settings.layersBrightnessMethod,
+                detailsBoost: settings.layersDetailsBoost
+            });
+            
+            let inputImageData = null;
+            
+            // If "Pixel Art First" is enabled, process with pixel art mode first
+            if (settings.layersPixelArtFirst) {
+                console.log('Pre-processing with Pixel Art mode...');
+                const manualScale = settings.autoPixelSize ? null : [settings.pixelSize, settings.pixelSize];
+                const [detectMethod, edgeDetectMethod] = settings.gridDetectionAlgorithm.split('-');
+                
+                const pixelResult = await unfake.processImage({
+                    file: appState.originalFile,
+                    maxColors: settings.maxColors,
+                    autoColorCount: settings.autoColorCount,
+                    snapGrid: settings.snapGrid,
+                    detectMethod: detectMethod,
+                    edgeDetectMethod: edgeDetectMethod || 'tiled',
+                    downscaleMethod: settings.downscaleMethod,
+                    domMeanThreshold: settings.domMeanThreshold,
+                    manualScale: manualScale,
+                    cleanup: {
+                        morph: settings.cleanupMorph,
+                        jaggy: settings.cleanupJaggy
+                    },
+                    alphaThreshold: settings.enableAlphaBinarization ? settings.alphaThreshold : null
+                });
+                
+                inputImageData = pixelResult.imageData;
+                console.log(`Pixel art pre-processing complete: ${inputImageData.width}x${inputImageData.height}`);
+            }
+            
+            return await unfake.extractLayers({
+                file: settings.layersPixelArtFirst ? null : appState.originalFile,
+                imageData: inputImageData,
+                alphaThreshold: settings.layersAlphaThreshold,
+                brightnessMethod: settings.layersBrightnessMethod,
+                detailsBoost: settings.layersDetailsBoost
+            });
         }
     } catch (error) {
         console.error('Error in processImage:', error);
@@ -1304,8 +1444,10 @@ async function processImage() {
 function displayResult(result) {
     if (appState.mode === 'pixel') {
         displayPixelArtResult(result);
-    } else {
+    } else if (appState.mode === 'vector') {
         displayVectorResult(result);
+    } else if (appState.mode === 'layers') {
+        displayLayersResult(result);
     }
 }
 
@@ -1321,6 +1463,10 @@ function isValidResult(result, mode) {
     } else if (mode === 'vector') {
         // For vector, we need SVG data
         return result.svg && typeof result.svg === 'string';
+    } else if (mode === 'layers') {
+        // For layers, we need mask and details data
+        return result.mask && result.details && 
+               result.mask.imageData && result.details.imageData;
     }
     
     return false;
@@ -1572,6 +1718,134 @@ function displayVectorResult(result) {
     }
 }
 
+// Display layers extraction result
+function displayLayersResult(result) {
+    // Validate result structure
+    if (!result || !result.mask || !result.details) {
+        console.error('Invalid layers result:', result);
+        clearResultArea();
+        return;
+    }
+
+    console.log('Displaying layers result:', result);
+
+    // Get the visual size of the original image in the interface
+    const originalImgElement = elements.originalImage;
+    const visualOriginalWidth = originalImgElement.offsetWidth;
+    const visualOriginalHeight = originalImgElement.offsetHeight;
+
+    // Calculate scale factor to match the visual size of the original
+    const maskData = result.mask.imageData;
+    const detailsData = result.details.imageData;
+    const scaleFactor = Math.max(visualOriginalWidth / maskData.width, visualOriginalHeight / maskData.height);
+
+    // Create mask canvas
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = maskData.width;
+    maskCanvas.height = maskData.height;
+    maskCanvas.style.cssText = `width: ${maskData.width * scaleFactor}px; height: ${maskData.height * scaleFactor}px; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges;`;
+    const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+    maskCtx.putImageData(maskData, 0, 0);
+
+    // Create details canvas
+    const detailsCanvas = document.createElement('canvas');
+    detailsCanvas.width = detailsData.width;
+    detailsCanvas.height = detailsData.height;
+    detailsCanvas.style.cssText = `width: ${detailsData.width * scaleFactor}px; height: ${detailsData.height * scaleFactor}px; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges;`;
+    const detailsCtx = detailsCanvas.getContext('2d', { willReadFrequently: true });
+    detailsCtx.putImageData(detailsData, 0, 0);
+
+    // Build processing info string
+    let processingInfo = '';
+    if (result.manifest) {
+        const info = [`Processing time: ${result.manifest.processing_time_ms}ms`];
+        if (result.manifest.options) {
+            if (result.manifest.options.source === 'imageData') {
+                info.push('Pixel Art First: Yes');
+            }
+            if (result.manifest.options.detailsBoost !== 1.0) {
+                info.push(`Details Boost: ${result.manifest.options.detailsBoost}x`);
+            }
+        }
+        processingInfo = info.join(' • ');
+    }
+
+    // Build result HTML with side-by-side layers
+    const resultHtml = `
+        <div class="layers-result">
+            <div class="layer-container">
+                <h3>Mask Layer</h3>
+                <p class="layer-description">White silhouette (cookie cutter shape)</p>
+                <div class="layer-image" id="mask-layer-container"></div>
+                <button class="layer-download-btn" data-layer="mask">Download Mask PNG</button>
+            </div>
+            <div class="layer-container">
+                <h3>Details Layer</h3>
+                <p class="layer-description">Outlines & shadows (brightness → transparency)</p>
+                <div class="layer-image" id="details-layer-container"></div>
+                <button class="layer-download-btn" data-layer="details">Download Details PNG</button>
+            </div>
+        </div>
+        <div class="image-size-info">
+            ${maskData.width} × ${maskData.height} pixels
+        </div>
+        ${processingInfo ? `<div class="processing-info">${processingInfo}</div>` : ''}
+    `;
+
+    elements.resultArea.innerHTML = resultHtml;
+    elements.resultArea.querySelector('#mask-layer-container').appendChild(maskCanvas);
+    elements.resultArea.querySelector('#details-layer-container').appendChild(detailsCanvas);
+
+    // Store canvases for download
+    const processedResult = {
+        ...result,
+        maskCanvas: maskCanvas,
+        detailsCanvas: detailsCanvas
+    };
+    appState.processedImage[appState.mode] = processedResult;
+
+    // Add event listeners for layer download buttons
+    elements.resultArea.querySelectorAll('.layer-download-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const layer = e.target.dataset.layer;
+            downloadLayer(layer);
+        });
+    });
+
+    // Hide the standard action buttons since we have custom ones
+    elements.actionButtons.style.display = 'none';
+    
+    // Hide the result pane (no palette for layers)
+    if (window.resultPane) {
+        window.resultPane.element.style.display = 'none';
+    }
+
+    console.log('Layers result displayed successfully');
+}
+
+// Download a specific layer
+function downloadLayer(layerName) {
+    const result = appState.processedImage[appState.mode];
+    if (!result) return;
+
+    const canvas = layerName === 'mask' ? result.maskCanvas : result.detailsCanvas;
+    if (!canvas) {
+        console.error(`No canvas found for layer: ${layerName}`);
+        return;
+    }
+
+    canvas.toBlob((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${layerName}-layer.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }, 'image/png');
+}
+
 // Handle copy to clipboard
 async function handleCopy() {
     if (!appState.processedImage[appState.mode]) return;
@@ -1768,8 +2042,8 @@ function updateUI() {
     // Update process button text
     updateProcessButtonText();
     
-    // Show/hide action buttons
-    if (appState.processedImage[appState.mode]) {
+    // Show/hide action buttons (hidden for layers mode which has custom buttons)
+    if (appState.processedImage[appState.mode] && appState.mode !== 'layers') {
         elements.actionButtons.style.display = 'flex';
     } else {
         elements.actionButtons.style.display = 'none';
@@ -1810,8 +2084,10 @@ function updateMainTitle() {
     if (!titleEl) return;
     if (appState.mode === 'pixel') {
         titleEl.textContent = 'unfake.js - Pixel Art Mode';
-    } else {
+    } else if (appState.mode === 'vector') {
         titleEl.textContent = 'unfake.js - Vectorize Mode';
+    } else if (appState.mode === 'layers') {
+        titleEl.textContent = 'unfake.js - Layer Extraction Mode';
     }
 }
 
