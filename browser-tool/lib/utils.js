@@ -349,6 +349,49 @@ export async function detectOptimalColorCount(imgData, {
 
 
 /**
+ * Maps every pixel to its nearest palette color using squared euclidean
+ * distance over RGBA (same metric as image-q's 'euclidean'). The nearest match
+ * is memoized per unique source color: pixel art reuses very few colors, so the
+ * expensive palette search runs once per unique color rather than once per pixel.
+ * @param {ImageData} imgData The input image data.
+ * @param {{r:number,g:number,b:number,a:number}[]} paletteColors The target palette.
+ * @returns {ImageData} A new ImageData with every pixel snapped to the palette.
+ */
+function applyPaletteNearest(imgData, paletteColors) {
+    const { data, width, height } = imgData;
+    const out = new Uint8ClampedArray(data.length);
+    const cache = new Map();
+
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+        const key = ((r << 24) | (g << 16) | (b << 8) | a) >>> 0; // unsigned RGBA key
+        let nearest = cache.get(key);
+        if (nearest === undefined) {
+            let bestIdx = 0;
+            let bestDist = Infinity;
+            for (let p = 0; p < paletteColors.length; p++) {
+                const c = paletteColors[p];
+                const dr = r - c.r, dg = g - c.g, db = b - c.b, da = a - c.a;
+                const dist = dr * dr + dg * dg + db * db + da * da;
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestIdx = p;
+                    if (dist === 0) break; // exact match, can't do better
+                }
+            }
+            nearest = paletteColors[bestIdx];
+            cache.set(key, nearest);
+        }
+        out[i] = nearest.r;
+        out[i + 1] = nearest.g;
+        out[i + 2] = nearest.b;
+        out[i + 3] = nearest.a;
+    }
+
+    return new ImageData(out, width, height);
+}
+
+/**
  * Quantizes image colors using image-q library with a fallback.
  * @param {ImageData} imgData The input image data.
  * @param {number} maxColors The maximum number of colors.
@@ -366,17 +409,20 @@ export function quantizeImage(imgData, maxColors, fixedPalette = null) {
                 paletteQuantization: 'wuquant',
               });
 
-        const outPointContainer = IQ.applyPaletteSync(inPointContainer, palette, {
-            imageQuantization: 'nearest',
-            ditherKern: 'None', // No dithering for pixel art
-        });
-        const quantized = new ImageData(new Uint8ClampedArray(outPointContainer.toUint8Array()), imgData.width, imgData.height);
-        
         // Extract palette in {r, g, b, a} format for tracers
         const tracerPalette = palette.getPointContainer().getPointArray().map(p => ({
             r: Math.round(p.r), g: Math.round(p.g), b: Math.round(p.b), a: Math.round(p.a)
         }));
-        
+
+        // Map pixels to the palette ourselves instead of IQ.applyPaletteSync.
+        // image-q's 'nearest' apply searches every pixel against every palette
+        // entry (O(pixels * colors)), which dominates runtime and scales linearly
+        // with the palette size — painful at 256 colors and worse beyond. Pixel
+        // art has few unique colors, so memoizing the lookup per unique source
+        // color makes the cost O(unique * colors + pixels) and keeps large
+        // palettes (512/1024) fast.
+        const quantized = applyPaletteNearest(imgData, tracerPalette);
+
         return {
             quantized: finalizePixels(quantized),
             colorsUsed: tracerPalette.length,

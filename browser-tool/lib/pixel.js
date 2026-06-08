@@ -29,6 +29,14 @@ import {
 import SVD from 'svd';
 
 /**
+ * Upper bound for the "Max Colors" control. Selecting this value means "no
+ * color reduction" — quantization is skipped entirely. Any lower value caps the
+ * palette to that many colors. Kept here (and re-exported via index.js) so the
+ * UI slider and the pipeline guards below can never drift apart.
+ */
+export const MAX_COLORS = 1024;
+
+/**
  * Detects pixel art scale by analyzing color run lengths. This method is very reliable for
  * "clean" pixel art with uniform block sizes.
  * @param {ImageData} imgData - The input image data.
@@ -671,7 +679,7 @@ export async function processImage({
 
     if (downscaleMethod === 'content-adaptive') {
         // Не квантизуем до даунскейла
-    } else if (effectiveMaxColors < 256 && initialColors > effectiveMaxColors) {
+    } else if (effectiveMaxColors < MAX_COLORS && initialColors > effectiveMaxColors) {
         logger.log(`Quantizing from ${initialColors} to a max of ${effectiveMaxColors} colors.`);
         const quantResult = quantizeImage(current, effectiveMaxColors, fixedPalette);
         current = quantResult.quantized;
@@ -700,7 +708,7 @@ export async function processImage({
     }
 
     // 6. Optional post-downscale quantization
-    if (quantizeAfter && effectiveMaxColors < 256) {
+    if (quantizeAfter && effectiveMaxColors < MAX_COLORS) {
         logger.log('Post-downscale quantization...');
         const quantResult = quantizeImage(current, effectiveMaxColors, fixedPalette);
         current = quantResult.quantized;

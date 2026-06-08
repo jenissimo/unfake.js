@@ -1,8 +1,9 @@
 // index.js – Main entry point for unfake.js library
 // Exports all public functions from pixel and vector modules
 
-import { 
+import {
   processImage,
+  MAX_COLORS,
 } from './pixel.js';
 import { vectorizeImage } from './vector.js';
 import { extractLayers, extractMaskLayer, extractDetailsLayer } from './layers.js';
@@ -25,9 +26,10 @@ import {
 } from './utils.js';
 
 // Re-export all functions
-export { 
-  processImage, 
+export {
+  processImage,
   vectorizeImage,
+  MAX_COLORS,
   extractLayers,
   extractMaskLayer,
   extractDetailsLayer,
@@ -54,7 +56,10 @@ export {
 export default {
   processImage,
   vectorizeImage,
+  MAX_COLORS,
   extractLayers,
+  extractMaskLayer,
+  extractDetailsLayer,
   utils: {
     cvReady, 
     fileToImageData, 
