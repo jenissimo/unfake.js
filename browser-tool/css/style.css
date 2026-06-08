@@ -379,6 +379,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 16px;
+    position: relative;
 }
 
 /* Upload area */
@@ -396,6 +397,28 @@ body {
     justify-content: center;
 }
 
+.choose-file-btn {
+    margin: 12px 0;
+    padding: 10px 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.choose-file-btn:hover {
+    border-color: var(--accent-primary);
+    background: var(--bg-tertiary);
+}
+
+.upload-content {
+    max-width: 220px;
+}
+
 .upload-area:hover {
     border-color: var(--accent-primary);
     background: var(--bg-tertiary);
@@ -404,10 +427,6 @@ body {
 .upload-area.drag-over {
     border-color: var(--accent-primary);
     background: var(--bg-tertiary);
-}
-
-.upload-content {
-    max-width: 200px;
 }
 
 .upload-icon {
@@ -634,6 +653,44 @@ body {
     opacity: 0.8;
 }
 
+/* Live progress log in Result panel */
+.processing-progress {
+    width: 100%;
+    max-width: 100%;
+    text-align: left;
+}
+
+.progress-log {
+    margin-top: 12px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.progress-line {
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.progress-line + .progress-line {
+    margin-top: 4px;
+}
+
+.progress-line.progress-warn {
+    color: #c9a227;
+}
+
+.progress-line.progress-error {
+    color: #e05252;
+}
+
 /* Palette */
 .palette {
     display: flex;
@@ -748,7 +805,34 @@ body {
     }
 }
 
-/* Loading states */
+/* Boot banner (top strip — does NOT block clicks on the page) */
+.boot-status {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    padding: 6px 16px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    font-size: 0.85rem;
+    color: #444;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    pointer-events: none;
+}
+
+.boot-status.boot-error { color: #c00; border-color: #faa; }
+.boot-status.boot-warn { color: #860; border-color: #eca; }
+.boot-status.boot-ok { color: #282; border-color: #cec; }
+
+[data-theme="dark"] .boot-status {
+    background: #1e1e1e;
+    border-color: #444;
+    color: #ccc;
+}
+
 .loading {
     opacity: 0.6;
     pointer-events: none;

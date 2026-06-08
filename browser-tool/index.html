@@ -1,145 +1,250 @@
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>unfake.js — AI to Pixel Art & Vector Converter</title>
-    
-    <!-- OpenCV.js -->
-    <script async src="https://docs.opencv.org/4.11.0/opencv.js" type="text/javascript"></script>
-    
-    <!-- Pako.js (required by UPNG.js) -->
-    <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
-    
-    <!-- UPNG.js (load as global script) -->
-    <script src="https://unpkg.com/upng-js@2.1.0/UPNG.js"></script>
-    <script src="https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
+
         
-    <!-- Dependencies for unfake.js (ES modules) -->
+
+    <!-- Dependencies for unfake.js (ES modules) — vendored under ./vendor/ -->
+
     <script type="importmap">
+
     {
+
       "imports": {
-        "svd": "https://unpkg.com/svd-js@1.1.1/build-es/svd.js",
-        "tweakpane": "https://unpkg.com/tweakpane@4.0.5/dist/tweakpane.min.js",
-        "image-q": "https://unpkg.com/image-q@4.0.0/dist/esm/image-q.mjs",
-        "potrace-wasm": "https://unpkg.com/esm-potrace-wasm@0.4.1/dist/index.js",
+
+        "svd": "./vendor/svd.js",
+
+        "tweakpane": "./vendor/tweakpane.min.js",
+
+        "image-q": "./vendor/image-q.js",
+
+        "potrace-wasm": "https://cdn.jsdelivr.net/npm/esm-potrace-wasm@0.4.1/dist/index.js",
+
         "../lib/utils.js": "../lib/utils.js",
+
         "../lib/pixel.js": "../lib/pixel.js",
+
         "../lib/vector.js": "../lib/vector.js"
+
       }
+
     }
+
     </script>
+
     
-    <!-- Custom styles -->
-    <link rel="stylesheet" href="css/style.css">
+
+    <link rel="stylesheet" href="css/style.css?v=20260608">
+
 </head>
+
 <body>
+
+    <noscript><p style="padding:2rem">JavaScript is required.</p></noscript>
+
+    <div id="boot-status" class="boot-status">Loading…</div>
+
     <div class="app-container">
-        <!-- Header -->
+
         <header class="app-header">
+
             <div class="header-content">
+
                 <h1 id="main-title">unfake.js - Pixel Art Mode</h1>
+
                 <div class="header-controls">
+
                     <div class="mode-switch">
+
                         <button class="mode-btn active" data-mode="pixel">Pixel Art</button>
+
                         <button class="mode-btn" data-mode="vector">Vector</button>
+
                         <button class="mode-btn" data-mode="layers">Layers</button>
+
                     </div>
+
                     <div class="preset-controls">
+
                         <select id="preset-selector" class="preset-selector">
+
                             <option value="">Default</option>
+
                         </select>
+
                         <button id="save-preset-btn" class="preset-btn" title="Save current settings as preset">💾</button>
+
                         <button id="delete-preset-btn" class="preset-btn" title="Delete selected preset" style="display: none;">🗑️</button>
+
                     </div>
+
                     <button id="magnifier-toggle" class="magnifier-toggle" title="Toggle magnifier">
+
                         🔍
+
                     </button>
+
                     <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+
                         🌙
+
                     </button>
+
                     <a href="https://jenissimo.itch.io/unfaker/donate" target="_blank" class="support-btn" title="Support the project">
+
                         💝 Support
+
                     </a>
+
                 </div>
+
             </div>
+
         </header>
 
-        <!-- Main content -->
+
+
         <main class="main-content">
-            <!-- Settings Panel -->
+
             <div id="tweakpane-container"></div>
 
-            <!-- Original Image -->
+
+
             <section class="image-panel">
+
                 <div class="panel-header">
+
                     <h2>Original</h2>
+
                 </div>
+
                 <div class="image-container">
-                    <!-- Upload Area -->
+
                     <div id="upload-area" class="upload-area">
+
                         <div class="upload-content">
+
                             <div class="upload-icon">📁</div>
+
                             <p>Drag & drop image here</p>
-                            <p>or click to select file</p>
+
+                            <button type="button" id="choose-file-btn" class="choose-file-btn">Choose file</button>
+
                             <p>or paste from clipboard (Ctrl+V)</p>
+
                             <p class="upload-hint">Supported: PNG, JPG, JPEG, WebP</p>
+
                             <p class="upload-hint">Max size: 10MB</p>
+
                         </div>
-                        <input type="file" id="file-input" accept="image/*" hidden>
+
                     </div>
+
+                    <input type="file" id="file-input" accept="image/*" hidden>
+
                     
-                    <!-- Image Display -->
+
                     <div id="image-display" class="image-display" style="display: none;">
+
                         <div class="image-wrapper">
+
                             <img id="original-image" alt="Original image">
+
                             <button id="reset-btn" class="reset-btn" title="Remove image">×</button>
+
                         </div>
+
                     </div>
+
                     
-                    <!-- Process Button -->
+
                     <button id="process-btn" class="process-btn" style="display: none;">
+
                         <span class="btn-text">✨ Process</span>
+
                         <span class="btn-loading" style="display: none;">Processing...</span>
+
                     </button>
+
                 </div>
+
             </section>
 
-            <!-- Result -->
+
+
             <section class="result-panel">
+
                 <div class="panel-header">
+
                     <h2>Result</h2>
+
                 </div>
+
                 <div class="result-container">
+
                     <div id="result-area" class="result-area">
+
                         <div class="placeholder">
+
                             <div class="placeholder-icon">✨</div>
+
                             <p>Upload an image and click "Process"</p>
+
                         </div>
+
                     </div>
 
-                    <!-- Action Buttons -->
+
+
                     <div class="action-buttons" style="display: none;">
+
                         <button id="copy-btn" class="copy-btn">
+
                             Copy to Clipboard
+
                         </button>
+
                         <button id="download-btn" class="download-btn">
+
                             Download
+
                         </button>
+
                         <button id="download-scaled-btn" class="download-btn">
+
                             Download Upscaled
+
                         </button>
+
                     </div>
+
                     
-                    <!-- Result Settings -->
+
                     <div id="result-tweakpane-container"></div>
-                    
+
                 </div>
+
             </section>
+
         </main>
+
     </div>
 
-    <!-- App script -->
-    <script type="module" src="js/app.js"></script>
+
+
+    <script src="js/boot.js?v=20260608"></script>
+
+    <script type="module" src="js/app.js?v=20260608"></script>
+
 </body>
-</html> 
+
+</html>
+

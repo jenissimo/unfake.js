@@ -48,4 +48,8 @@ coverage/
 
 # Temporary folders
 tmp/
-temp/ 
+temp/
+
+# Local test images / fixtures (not part of the repo)
+samples/
+test-images/ 

@@ -1,7 +1,9 @@
 // vector.js – Vector processing module
 // Handles image vectorization using imagetracer.js
 
-import { fileToImageData, logger, withCv, quantizeImage, detectOptimalColorCount } from './utils.js';
+import { fileToImageData, logger, quantizeImage, detectOptimalColorCount } from './utils.js';
+import { runOp } from './opencv-client.js';
+import { ensureImageTracer } from './scripts.js';
 
 /**
  * Applies pre-processing filters to an ImageData object to reduce noise from AI generation.
@@ -11,60 +13,7 @@ import { fileToImageData, logger, withCv, quantizeImage, detectOptimalColorCount
  */
 export async function preProcessImage(imgData, options) {
     logger.log('Pre-processing image with options:', options);
-
-    // Using withCv to handle OpenCV resource management automatically
-    return withCv(async (cv, track) => {
-        const src = track(cv.matFromImageData(imgData));
-        const dst = track(new cv.Mat());
-
-        if (options.filter === 'bilateral') {
-            const d = options.value || 15;
-            const sigmaColor = d * 2;
-            const sigmaSpace = d / 2;
-
-            // Bilateral filter can corrupt alpha, so we process RGB channels separately
-            const channels = track(new cv.MatVector());
-            cv.split(src, channels);
-
-            const rgb = track(new cv.Mat());
-            const rgbChannels = track(new cv.MatVector());
-            rgbChannels.push_back(channels.get(0));
-            rgbChannels.push_back(channels.get(1));
-            rgbChannels.push_back(channels.get(2));
-            cv.merge(rgbChannels, rgb);
-
-            const filteredRgb = track(new cv.Mat());
-            cv.bilateralFilter(rgb, filteredRgb, d, sigmaColor, sigmaSpace, cv.BORDER_DEFAULT);
-
-            // Re-add original alpha channel
-            const filteredChannels = track(new cv.MatVector());
-            cv.split(filteredRgb, filteredChannels);
-
-            const finalChannels = track(new cv.MatVector());
-            finalChannels.push_back(filteredChannels.get(0));
-            finalChannels.push_back(filteredChannels.get(1));
-            finalChannels.push_back(filteredChannels.get(2));
-            finalChannels.push_back(channels.get(3)); // Original alpha
-            cv.merge(finalChannels, dst);
-
-        } else if (options.filter === 'median') {
-            let ksize = options.value || 5;
-            if (ksize % 2 === 0) ksize++; // Must be odd
-            cv.medianBlur(src, dst, ksize);
-        } else {
-             logger.warn(`Unknown pre-process filter: "${options.filter}". Skipping.`);
-             return imgData;
-        }
-
-        if (options.morphology) {
-             const kernelSize = options.morphologyKernel || 3;
-             const kernel = track(cv.Mat.ones(kernelSize, kernelSize, cv.CV_8U));
-             cv.morphologyEx(dst, dst, cv.MORPH_CLOSE, kernel);
-             logger.log(`Applied morphological closing with kernel size ${kernelSize}`);
-        }
-
-        return new ImageData(new Uint8ClampedArray(dst.data), dst.cols, dst.rows);
-    });
+    return runOp('vectorPreProcess', { image: imgData, options });
 }
 
 /**
@@ -76,23 +25,7 @@ export async function preProcessImage(imgData, options) {
  */
 async function fillBackground(imgData, color = { r: 255, g: 0, b: 255, a: 255 }) {
     logger.log('Applying solid background to prevent edge artifacts...');
-    return withCv(async (cv, track) => {
-        const src = track(cv.matFromImageData(imgData));
-        const { width, height } = imgData;
-
-        // Create a Mat with the specified background color
-        const bgMat = track(new cv.Mat(height, width, cv.CV_8UC4, [color.r, color.g, color.b, color.a]));
-
-        // Create a mask from the source image's alpha channel using split()
-        const channels = track(new cv.MatVector());
-        cv.split(src, channels);
-        const alphaMask = track(channels.get(3)); // Channel 3 is Alpha
-
-        // Copy the source image onto the background, using its own alpha as a mask
-        src.copyTo(bgMat, alphaMask);
-        
-        return new ImageData(new Uint8ClampedArray(bgMat.data), width, height);
-    });
+    return runOp('vectorFillBackground', { image: imgData, color });
 }
 
 /**
@@ -171,23 +104,7 @@ function hasTransparency(imgData) {
  */
 export async function postProcessImage(imgData, options) {
     logger.log('Post-processing image for smoothing:', options);
-    return withCv(async (cv, track) => {
-        const src = track(cv.matFromImageData(imgData));
-        const dst = track(new cv.Mat());
-        let ksize = options.value || 3;
-        if (ksize % 2 === 0) ksize++; // Kernel size must be odd
-        
-        if (options.filter === 'gaussian') {
-            const kernel = new cv.Size(ksize, ksize);
-            cv.GaussianBlur(src, dst, kernel, 0, 0, cv.BORDER_DEFAULT);
-        } else if (options.filter === 'median') {
-            cv.medianBlur(src, dst, ksize);
-        } else {
-             logger.warn(`Unknown post-process filter: "${options.filter}". Skipping.`);
-             return imgData;
-        }
-        return new ImageData(new Uint8ClampedArray(dst.data), dst.cols, dst.rows);
-    });
+    return runOp('vectorPostProcess', { image: imgData, options });
 }
 
 
@@ -213,15 +130,15 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
     const magicBackgroundColor = { r: 255, g: 0, b: 255, a: 255 };
     let backgroundWasAdded = false;
 
+    await ensureImageTracer();
     if (typeof ImageTracer === 'undefined') {
-        throw new Error('ImageTracer.js is not loaded. Please include it in your HTML.');
+        throw new Error('ImageTracer.js failed to load.');
     }
 
     // 1. Get ImageData from file
     let imgData = await fileToImageData(file);
 
-    // NEW: If image has transparency, apply a temporary solid background *before* any processing.
-    // This prevents all kinds of artifacts on the edges during filtering and quantization.
+    // If image has transparency, apply a temporary solid background before any processing.
     if (hasTransparency(imgData)) {
         logger.log('Transparent image detected, applying temporary background...');
         imgData = await fillBackground(imgData, magicBackgroundColor);
@@ -232,8 +149,8 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
     if (preProcess?.enabled) {
         try {
             const preProcessDefaults = {
-                filter: 'bilateral', // 'bilateral' or 'median'
-                value: 15,           // d for bilateral, ksize for median
+                filter: 'bilateral',
+                value: 15,
                 morphology: true,
                 morphologyKernel: 3,
             };
@@ -249,7 +166,7 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
     if (quantize?.enabled) {
         try {
             const quantizeDefaults = {
-                maxColors: 16, // Can be a number or 'auto'
+                maxColors: 16,
             };
             const finalQuantizeOptions = { ...quantizeDefaults, ...quantize };
 
@@ -262,11 +179,9 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
             const { quantized, palette } = quantizeImage(imgData, numColors);
             imgData = quantized;
 
-            // Pass the exact palette to ImageTracer to prevent it from guessing.
-            // This also disables its internal color quantization.
             if (palette?.length) {
                 traceOptions.pal = palette;
-                traceOptions.colorsampling = 0; // Disable color sampling
+                traceOptions.colorsampling = 0;
                 traceOptions.numberofcolors = palette.length;
                 logger.log(`Using fixed palette with ${palette.length} colors.`);
             }
@@ -281,7 +196,7 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
         try {
             const postProcessDefaults = {
                 filter: 'gaussian',
-                value: 3, // Kernel size
+                value: 3,
             };
             const finalPostProcessOptions = { ...postProcessDefaults, ...postProcess };
             imgData = await postProcessImage(imgData, finalPostProcessOptions);
@@ -292,33 +207,23 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
     }
 
     // 5. Set ImageTracer options
-    // First defaults, then override with user settings
     const options = {
-        // Tracing
         ltres: 1,
         qtres: 1,
         pathomit: 8,
         rightangleenhance: true,
-
-        // Color quantization
-        colorsampling: 2, // 2 = deterministic sampling
+        colorsampling: 2,
         numberofcolors: 16,
         mincolorratio: 0,
         colorquantcycles: 3,
-
-        // SVG rendering
         strokewidth: 1,
         linefilter: false,
         scale: 1,
         roundcoords: 1,
-        viewbox: true, // Enable viewBox for scalability
+        viewbox: true,
         desc: false,
-
-        // Blur
         blurradius: 0,
         blurdelta: 20,
-
-        // Override default values with user settings
         ...traceOptions,
     };
 
@@ -342,10 +247,10 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
         original_size: [imgData.width, imgData.height],
         processing_time_ms: Math.round(t1 - t0),
         timestamp: new Date().toISOString(),
-        options: options, // save used options
-        preProcess, // and pre-processing options
-        quantize, // and quantization options
-        postProcess, // and post-processing options
+        options: options,
+        preProcess,
+        quantize,
+        postProcess,
     };
 
     return { svg: svgString, manifest, palette: finalPalette };
