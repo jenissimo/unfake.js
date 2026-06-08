@@ -5,8 +5,31 @@
  */
 
 import * as IQ from 'image-q';
+import { ensurePakoAndUPNG } from './scripts.js';
+import { cvReady as ensureOpenCVWorker, runOp } from './opencv-client.js';
 
-// --- Logger Utility ----------------------------------------------------------
+let progressHandler = null;
+
+/**
+ * Register a UI callback for pipeline progress messages.
+ * @param {((entry: { level: string, text: string }) => void)|null} handler
+ */
+export function setProgressHandler(handler) {
+  progressHandler = handler;
+}
+
+function formatLogArgs(args) {
+  return args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+}
+
+function emitProgress(level, args) {
+  if (!progressHandler) return;
+  try {
+    progressHandler({ level, text: formatLogArgs(args) });
+  } catch {
+    /* UI hook must not break pipeline */
+  }
+}
 
 /**
  * Logger utility with debug control.
@@ -14,107 +37,39 @@ import * as IQ from 'image-q';
  */
 export const logger = {
   _isEnabled: () => typeof window !== 'undefined' ? window.DEBUG_UNFAKE !== false : true,
-  log: (...args) => logger._isEnabled() && console.log('[unfake.js]', ...args),
-  warn: (...args) => logger._isEnabled() && console.warn('[unfake.js]', ...args),
-  error: (...args) => console.error('[unfake.js]', ...args),
+  log: (...args) => {
+    emitProgress('log', args);
+    if (logger._isEnabled()) console.log('[unfake.js]', ...args);
+  },
+  warn: (...args) => {
+    emitProgress('warn', args);
+    if (logger._isEnabled()) console.warn('[unfake.js]', ...args);
+  },
+  error: (...args) => {
+    emitProgress('error', args);
+    console.error('[unfake.js]', ...args);
+  },
 };
 
-// --- OpenCV Integration ------------------------------------------------------
+// --- OpenCV Integration (lazy-loaded classic script) ----------------------------
 
 let cvPromise = null;
 
 /**
- * Ensures OpenCV is ready and returns the `cv` namespace.
- * This function is memoized and returns a singleton promise.
- * @returns {Promise<object>} A promise that resolves with the `cv` object.
+ * Lazy-load OpenCV for Pixel Art, Vector, and Layers (pixel-art-first).
+ * @returns {Promise<object>} The initialized `cv` namespace.
  */
 export async function cvReady() {
   if (cvPromise) return cvPromise;
 
-  cvPromise = new Promise((resolve, reject) => {
-    // Case 1: cv is already a promise (common in modern opencv.js)
-    if (typeof cv !== 'undefined' && cv instanceof Promise) {
-      logger.log('OpenCV is loading (promise)...');
-      return cv.then(resolve).catch(reject);
-    }
+  cvPromise = (async () => {
+    logger.log('Loading OpenCV worker...');
+    const handle = await ensureOpenCVWorker();
+    logger.log('OpenCV worker ready.');
+    return handle;
+  })();
 
-    // Case 2: cv is already loaded and initialized
-    if (typeof cv !== 'undefined' && cv.getBuildInformation) {
-      logger.log('OpenCV is already ready.');
-      return resolve(cv);
-    }
-
-    // Case 3: In a non-browser environment
-    if (typeof window === 'undefined') {
-      return reject(new Error('OpenCV is not available in a non-browser environment.'));
-    }
-
-    // Case 4: window.onOpenCvReady is defined (legacy support)
-    if (typeof window.onOpenCvReady === 'function') {
-      const originalOnReady = window.onOpenCvReady;
-      window.onOpenCvReady = () => {
-        originalOnReady();
-        if (cv.getBuildInformation) {
-          logger.log('OpenCV initialized via onOpenCvReady callback.');
-          resolve(cv);
-        } else {
-          reject(new Error('onOpenCvReady was called, but cv object is invalid.'));
-        }
-      };
-      return; // The callback will resolve/reject the promise
-    }
-
-    // Case 5: Poll for cv object
-    logger.log('Waiting for OpenCV to initialize...');
-    const startTime = Date.now();
-    const interval = setInterval(() => {
-      if (Date.now() - startTime > 20000) { // 20-second timeout
-        clearInterval(interval);
-        return reject(new Error('OpenCV failed to initialize within 20 seconds.'));
-      }
-
-      if (typeof cv !== 'undefined') {
-        clearInterval(interval);
-        // It might have loaded and become a promise
-        if (cv instanceof Promise) {
-            logger.log('OpenCV is loading (promise detected)...');
-            return cv.then(resolve).catch(reject);
-        }
-        if (cv.getBuildInformation) {
-            logger.log('OpenCV initialized successfully.');
-            resolve(cv);
-        }
-      }
-    }, 100);
-  });
   return cvPromise;
-}
-
-/**
- * Resource management wrapper for OpenCV operations.
- * Ensures that OpenCV is ready and all created Mat objects are deleted.
- * @param {function(cv: object, track: Function): Promise<any>} fn - An async function that receives `cv` and a `track` function.
- * @returns {Promise<any>} The result of the async function execution.
- */
-export async function withCv(fn) {
-    const mats = new Set();
-    const cv = await cvReady();
-    const track = (mat) => {
-        if (mat && typeof mat.delete === 'function') {
-            mats.add(mat);
-        }
-        return mat;
-    };
-    try {
-        return await fn(cv, track);
-    } finally {
-        mats.forEach(mat => {
-            // isDeleted might not exist on all cv versions, check for it.
-            if (mat && !mat.isDeleted?.()) {
-                mat.delete();
-            }
-        });
-    }
 }
 
 // --- Image Loading and Conversion --------------------------------------------
@@ -157,6 +112,7 @@ export async function fileToImageData(file) {
  * @returns {Promise<Uint8Array>} A Uint8Array containing the PNG file data.
  */
 export async function encodePng(imgData) {
+  await ensurePakoAndUPNG();
   const { UPNG } = window;
 
   if (UPNG?.encode) {
@@ -184,18 +140,7 @@ export async function encodePng(imgData) {
  * @returns {Promise<ImageData>} The cleaned image data.
  */
 export async function morphologicalCleanup(imgData) {
-  return withCv((cv, track) => {
-    const mat = track(cv.matFromImageData(imgData));
-    const kernel = track(cv.Mat.ones(2, 2, cv.CV_8U)); // 2x2 for finer details
-
-    // OPEN operation removes noise and small artifacts
-    cv.morphologyEx(mat, mat, cv.MORPH_OPEN, kernel);
-
-    // CLOSE operation fills small gaps and smooths jagged edges
-    cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, kernel);
-
-    return new ImageData(new Uint8ClampedArray(mat.data), mat.cols, mat.rows);
-  });
+  return runOp('morphologicalCleanup', { image: imgData });
 }
 
 /**
@@ -294,57 +239,15 @@ export async function detectOptimalColorCount(imgData, {
     maxColors = 32
 } = {}) {
     logger.log('Detecting optimal color count...');
-    return withCv(async (cv, track) => {
-        const src = track(cv.matFromImageData(imgData));
-        
-        // Downsample for faster analysis
-        const aspectRatio = src.rows / src.cols;
-        const targetWidth = downsampleTo;
-        const targetHeight = Math.round(targetWidth * aspectRatio);
-        const dsize = new cv.Size(targetWidth, targetHeight);
-        const smallMat = track(new cv.Mat());
-        cv.resize(src, smallMat, dsize, 0, 0, cv.INTER_AREA);
-        
-        // Blur to remove noise and gradients
-        cv.medianBlur(smallMat, smallMat, 5);
-        cv.GaussianBlur(smallMat, smallMat, new cv.Size(5, 5), 1, 1);
-
-        // Gather color statistics with aggressive quantization
-        const colorCounts = new Map();
-        const totalPixels = smallMat.rows * smallMat.cols;
-        const d = smallMat.data;
-
-        for (let i = 0; i < d.length; i += 4) {
-            if (d[i + 3] < 200) continue; // Ignore transparent pixels
-
-            const r = Math.round(d[i] / colorQuantizeFactor) * colorQuantizeFactor;
-            const g = Math.round(d[i + 1] / colorQuantizeFactor) * colorQuantizeFactor;
-            const b = Math.round(d[i + 2] / colorQuantizeFactor) * colorQuantizeFactor;
-
-            const colorKey = `${r},${g},${b}`;
-            colorCounts.set(colorKey, (colorCounts.get(colorKey) || 0) + 1);
-        }
-        
-        // Analyze for dominant colors
-        const minPixelsForDominance = Math.max(3, Math.round(totalPixels * dominanceThreshold));
-        logger.log(`Found ${colorCounts.size} unique quantized colors (pre-filter)`);
-        
-        const sortedColors = Array.from(colorCounts.entries())
-            .filter(([, count]) => count >= minPixelsForDominance);
-        
-        let significantColors = sortedColors.length;
-        
-        // If there are too many colors, apply a stricter threshold
-        if (significantColors > maxColors) {
-            const strictThreshold = Math.max(minPixelsForDominance, Math.round(totalPixels * 0.02));
-            significantColors = sortedColors.filter(([, count]) => count >= strictThreshold).length;
-            logger.log(`Filtered down to ${significantColors} dominant colors`);
-        }
-        
-        const result = Math.max(2, Math.min(significantColors, maxColors));
-        logger.log(`Final auto-detected color count: ${result}`);
-        return result;
+    const result = await runOp('detectOptimalColorCount', {
+        image: imgData,
+        downsampleTo,
+        colorQuantizeFactor,
+        dominanceThreshold,
+        maxColors,
     });
+    logger.log(`Final auto-detected color count: ${result}`);
+    return result;
 }
 
 

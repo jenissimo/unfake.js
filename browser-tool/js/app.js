@@ -4,11 +4,22 @@
 // Enable debug logging
 window.DEBUG_PIXEL_PROCESSOR = false;
 
-// Import dependencies
-import unfake, { MAX_COLORS } from '../lib/index.js';
-import { Pane } from 'tweakpane';
 import Magnifier from './magnifier.js';
-import { cvReady } from '../lib/utils.js';
+
+/** Max Colors slider cap — must match lib/pixel.js MAX_COLORS */
+const MAX_COLORS = 1024;
+
+function setBootStatus(text, className) {
+    const el = document.getElementById('boot-status');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('boot-error', 'boot-warn', 'boot-ok');
+    if (className) el.classList.add(className);
+}
+
+function hideBootStatusSoon(delayMs = 2500) {
+    setTimeout(() => document.getElementById('boot-status')?.remove(), delayMs);
+}
 
 // Global state
 let appState = {
@@ -33,89 +44,95 @@ let appState = {
 let elements = {};
 
 // Initialize app when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
+// app.js is dynamically imported, often AFTER DOMContentLoaded has already fired,
+// so the listener would never run. Guard on readyState and init immediately if ready.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => initializeApp());
+} else {
     initializeApp();
-});
+}
 
 // Main initialization
 function initializeApp() {
-    console.log('Initializing unfake.js browser tool...');
-    
-    // Cache DOM elements
-    cacheElements();
-    
-    // Initialize UI components
-    initializeUI();
-    
-    // Asynchronously wait for OpenCV to be ready
-    cvReady().then(() => {
-        console.log('OpenCV is ready.');
-        appState.opencvReady = true;
-        updateUI();
-    }).catch(err => {
-        console.error('Failed to load OpenCV:', err);
-        alert('Could not initialize OpenCV. Please try refreshing the page.');
-        // Optionally, disable processing features
-        elements.processBtn.disabled = true;
-        elements.processBtn.textContent = 'OpenCV Failed';
-    });
-    
-    // Initialize magnifier
-    initializeMagnifier();
-    
-    // Load magnifier state
+    try {
+        window.__unfakeReady = true;
+        console.log('Initializing unfake.js browser tool...');
+        setBootStatus('Loading settings…');
+
+        cacheElements();
+        initializeTheme();
+        bindEvents();
+        appState.opencvReady = false;
+        initializeMagnifier();
+
+        window.addEventListener('unfake:file', (e) => adoptBootFile(e.detail));
+        if (window.__unfakeBoot?.ready) {
+            adoptBootFile({
+                file: window.__unfakeBoot.file,
+                dataUrl: window.__unfakeBoot.dataUrl,
+                image: elements.originalImage,
+            });
+        }
+
     const magnifierEnabled = localStorage.getItem('unfake-magnifier-enabled') === 'true';
-    console.log('Loading magnifier state:', magnifierEnabled);
-    
     if (magnifierEnabled && appState.magnifier) {
         appState.magnifier.activate();
         elements.magnifierToggle.classList.add('active');
-        elements.magnifierToggle.textContent = '🔍';
         elements.magnifierToggle.title = 'Magnifier active - hover over images';
-        console.log('Magnifier activated');
-    } else {
-        // Ensure magnifier is deactivated and UI shows correct state
-        if (appState.magnifier) {
-            appState.magnifier.deactivate();
-        }
+    } else if (appState.magnifier) {
+        appState.magnifier.deactivate();
         elements.magnifierToggle.classList.remove('active');
-        elements.magnifierToggle.textContent = '🔍';
         elements.magnifierToggle.title = 'Toggle magnifier';
-        console.log('Magnifier deactivated');
     }
-    
-    // Load magnifier settings
+
     const savedZoom = localStorage.getItem('unfake-magnifier-zoom');
     const savedSize = localStorage.getItem('unfake-magnifier-size');
     if (savedZoom && appState.magnifier) {
-        appState.magnifier.setZoomLevel(parseInt(savedZoom));
-        if (window.appSettings) {
-            window.appSettings.magnifierZoom = parseInt(savedZoom);
-        }
+        appState.magnifier.setZoomLevel(parseInt(savedZoom, 10));
     }
     if (savedSize && appState.magnifier) {
-        appState.magnifier.setSize(parseInt(savedSize));
-        if (window.appSettings) {
-            window.appSettings.magnifierSize = parseInt(savedSize);
-        }
+        appState.magnifier.setSize(parseInt(savedSize, 10));
     }
-    
-    // Load presets
-    loadPresets();
-    
-    // Bind event listeners
-    bindEvents();
-    
-    // Set initial UI state from hash
+
     if (!window.location.hash) {
         window.location.hash = 'pixel';
-    } else {
-        setModeFromHash();
     }
-    
-    // Update initial UI state
+
     updateUI();
     updateMainTitle();
+
+        // Defer Tweakpane so the HTML shell paints before heavy UI construction
+        requestAnimationFrame(() => {
+            (async () => {
+                try {
+                    await initializeTweakpane();
+                    await initializeResultTweakpane();
+                    loadPresets();
+
+                    const savedZoomVal = localStorage.getItem('unfake-magnifier-zoom');
+                    const savedSizeVal = localStorage.getItem('unfake-magnifier-size');
+                    if (window.appSettings) {
+                        if (savedZoomVal) window.appSettings.magnifierZoom = parseInt(savedZoomVal, 10);
+                        if (savedSizeVal) window.appSettings.magnifierSize = parseInt(savedSizeVal, 10);
+                    }
+
+                    if (window.location.hash) {
+                        setModeFromHash();
+                    }
+                    updateUI();
+                    updateMainTitle();
+                    setBootStatus('Settings loaded', 'boot-ok');
+                    hideBootStatusSoon();
+                } catch (err) {
+                    console.error('Settings init failed:', err);
+                    setBootStatus(`Settings error: ${err.message}`, 'boot-error');
+                }
+            })();
+        });
+    } catch (err) {
+        console.error('App init failed:', err);
+        setBootStatus(`Error: ${err.message}`, 'boot-error');
+    }
 }
 
 // Set application mode based on URL hash
@@ -221,7 +238,8 @@ function initializeUI() {
 }
 
 // Initialize Tweakpane settings panel
-function initializeTweakpane() {
+async function initializeTweakpane() {
+    const { Pane } = await import('tweakpane');
     // Create separate Tweakpane instances for each mode
     const pixelPane = new Pane({
         container: elements.tweakpaneContainer
@@ -907,7 +925,8 @@ function handlePaletteChange(newPaletteObj) {
 
 
 // Initialize Result Tweakpane for palette editing
-function initializeResultTweakpane() {
+async function initializeResultTweakpane() {
+    const { Pane } = await import('tweakpane');
     // Create Result Tweakpane instance
     const resultPane = new Pane({
         container: elements.resultTweakpaneContainer,
@@ -999,13 +1018,7 @@ function bindEvents() {
     // Magnifier toggle
     elements.magnifierToggle.addEventListener('click', handleMagnifierToggle);
     
-    // File upload
-    elements.uploadArea.addEventListener('click', () => elements.fileInput.click());
-    elements.uploadArea.addEventListener('dragover', handleDragOver);
-    elements.uploadArea.addEventListener('drop', handleFileDrop);
-    elements.fileInput.addEventListener('change', handleFileSelect);
-    
-    // Reset button
+    // Reset button (upload is owned by boot.js)
     elements.resetBtn.addEventListener('click', handleReset);
     
     // Process button
@@ -1021,9 +1034,6 @@ function bindEvents() {
     elements.savePresetBtn.addEventListener('click', handleSavePreset);
     elements.deletePresetBtn.addEventListener('click', handleDeletePreset);
     
-    // Paste from clipboard
-    document.addEventListener('paste', handlePaste);
-
     // Add hashchange listener for mode switching
     window.addEventListener('hashchange', setModeFromHash);
 }
@@ -1086,82 +1096,47 @@ function handleMagnifierToggle() {
 
 
 
-// Handle drag over
-function handleDragOver(e) {
-    e.preventDefault();
-    elements.uploadArea.classList.add('drag-over');
-}
+// Adopt file loaded by boot.js (click / drop / paste)
+function adoptBootFile(detail) {
+    const file = detail?.file;
+    let image = detail?.image;
 
-// Handle file drop
-function handleFileDrop(e) {
-    e.preventDefault();
-    elements.uploadArea.classList.remove('drag-over');
-    
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-        handleFile(files[0]);
-    }
-}
+    if (!file) return;
 
-// Handle file select
-function handleFileSelect(e) {
-    const files = e.target.files;
-    if (files.length > 0) {
-        handleFile(files[0]);
-    }
-}
-
-// Handle paste from clipboard
-function handlePaste(e) {
-    const items = e.clipboardData.items;
-    for (let item of items) {
-        if (item.type.indexOf('image') !== -1) {
-            const file = item.getAsFile();
-            handleFile(file);
-            break;
+    const apply = (img) => {
+        if (!img?.naturalWidth) return;
+        if (appState.magnifier && elements.originalImage) {
+            appState.magnifier.clearCacheForElement(elements.originalImage);
         }
-    }
-}
-
-
-
-// Handle file processing
-function handleFile(file) {
-    if (!file || !file.type.startsWith('image/')) {
-        alert('Please select a valid image file (PNG, JPG, JPEG, WebP)');
-        return;
-    }
-    
-    if (file.size > 10 * 1024 * 1024) { // 10MB limit
-        alert('File size must be less than 10MB');
-        return;
-    }
-
-    // Clear magnifier cache for the old image before loading a new one
-    if (appState.magnifier && elements.originalImage) {
-        appState.magnifier.clearCacheForElement(elements.originalImage);
-    }
-    
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-            appState.originalImage = img;
-            appState.originalFile = file; // Store the original file for processing
-            displayOriginalImage(img);
-            updateUI();
-        };
-        img.src = e.target.result;
+        appState.originalImage = img;
+        appState.originalFile = file;
+        appState.processedImage = { pixel: null, vector: null, layers: null };
+        clearResultArea();
+        syncOriginalImageMeta(img);
+        updateUI();
     };
-    reader.readAsDataURL(file);
+
+    if (image?.naturalWidth) {
+        apply(image);
+        return;
+    }
+
+    if (image?.src) {
+        if (image.complete && image.naturalWidth) {
+            apply(image);
+        } else {
+            image.addEventListener('load', () => apply(image), { once: true });
+        }
+        return;
+    }
+
+    const img = new Image();
+    img.onload = () => apply(img);
+    img.src = detail?.dataUrl || window.__unfakeBoot?.dataUrl;
 }
 
-// Display original image
-function displayOriginalImage(img) {
-    elements.originalImage.src = img.src;
-    elements.uploadArea.style.display = 'none';
-    elements.imageDisplay.style.display = 'block';
-    
+// Size info + hints for the original image (visibility handled by boot.js)
+function syncOriginalImageMeta(img) {
     // Add size information
     const sizeInfo = document.createElement('div');
     sizeInfo.className = 'image-size-info';
@@ -1233,11 +1208,9 @@ function handleReset() {
 
     appState.originalImage = null;
     appState.originalFile = null;
-    appState.processedImage = { pixel: null, vector: null };
-    
-    elements.uploadArea.style.display = 'flex';
-    elements.imageDisplay.style.display = 'none';
-    elements.processBtn.style.display = 'none';
+    appState.processedImage = { pixel: null, vector: null, layers: null };
+
+    window.dispatchEvent(new CustomEvent('unfake:reset-upload'));
     elements.actionButtons.style.display = 'none';
     
     // Clear result area
@@ -1260,19 +1233,69 @@ function handleReset() {
     updateUI();
 }
 
+function modeNeedsOpenCV(mode, settings = window.appSettings) {
+    if (mode === 'vector') return true;
+    if (mode === 'layers') return !!settings?.layersPixelArtFirst;
+    if (mode !== 'pixel' || !settings) return false;
+
+    if (!settings.autoPixelSize) {
+        if (settings.snapGrid) return true;
+        if (settings.cleanupMorph) return true;
+        if (settings.downscaleMethod === 'content-adaptive') return true;
+        if (settings.autoColorCount) return true;
+        return false;
+    }
+
+    const [detectMethod] = (settings.gridDetectionAlgorithm || 'auto-tiled').split('-');
+    if (detectMethod === 'auto' || detectMethod === 'edge') return true;
+    if (settings.snapGrid) return true;
+    if (settings.cleanupMorph) return true;
+    if (settings.downscaleMethod === 'content-adaptive') return true;
+    if (settings.autoColorCount) return true;
+    return false;
+}
+
 // Handle process button click
 async function handleProcess() {
     if (!appState.originalImage) {
         alert('Please upload an image first');
         return;
     }
-    
-    if (!appState.opencvReady) {
-        alert('OpenCV is not ready yet. Please wait a moment and try again.');
-        return;
+
+    let unbindProgress = null;
+
+    if (!appState.opencvReady && modeNeedsOpenCV(appState.mode)) {
+        setProcessingState(true);
+        showProcessingProgress('Loading OpenCV in background…');
+        unbindProgress = await bindProgressLogger();
+        appendProgressLog('Compiling OpenCV WASM in worker…');
+        setBootStatus('Loading OpenCV in background…', 'boot-warn');
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        try {
+            const { cvReady } = await import('../lib/utils.js');
+            await cvReady();
+            appState.opencvReady = true;
+            appendProgressLog('OpenCV worker ready');
+            setBootStatus('OpenCV ready', 'boot-ok');
+            hideBootStatusSoon(2000);
+        } catch (err) {
+            console.error('Failed to load OpenCV:', err);
+            appendProgressLog(`OpenCV error: ${err.message}`, 'error');
+            setBootStatus(`OpenCV error: ${err.message}`, 'boot-error');
+            alert(`This mode requires OpenCV, which failed to load.\n\n${err.message}`);
+            unbindProgress?.();
+            setProcessingState(false);
+            return;
+        }
+        setProcessingState(false);
     }
     
     setProcessingState(true);
+    if (!unbindProgress) {
+        showProcessingProgress('Processing…');
+        unbindProgress = await bindProgressLogger();
+    }
+    appendProgressLog('Starting pipeline…');
     
     try {
         console.log('Starting image processing...');
@@ -1303,8 +1326,10 @@ async function handleProcess() {
             errorMessage += errorStr;
         }
         
+        appendProgressLog(errorMessage, 'error');
         alert(errorMessage);
     } finally {
+        unbindProgress?.();
         setProcessingState(false);
     }
 }
@@ -1340,7 +1365,8 @@ async function processImage() {
     try {
         if (appState.mode === 'pixel') {
             console.log('Processing pixel art with settings:', settings);
-            return await unfake.processImage(buildPixelArtOptions(settings));
+            const { processImage: runPixelPipeline } = await import('../lib/pixel.js');
+            return await runPixelPipeline(buildPixelArtOptions(settings));
         } else if (appState.mode === 'vector') {
             console.log('Processing vector with settings:', settings);
             
@@ -1363,7 +1389,8 @@ async function processImage() {
             };
 
             // Pass all imagetracer options
-            return await unfake.vectorizeImage({
+            const { vectorizeImage } = await import('../lib/vector.js');
+            return await vectorizeImage({
                 file: appState.originalFile,
                 preProcess: preProcessOptions,
                 quantize: quantizeOptions,
@@ -1391,14 +1418,17 @@ async function processImage() {
             let inputImageData = null;
             
             // If "Pixel Art First" is enabled, process with pixel art mode first
+            const { processImage: runPixelPipeline } = await import('../lib/pixel.js');
+            const { extractLayers } = await import('../lib/layers.js');
+
             if (settings.layersPixelArtFirst) {
                 console.log('Pre-processing with Pixel Art mode...');
-                const pixelResult = await unfake.processImage(buildPixelArtOptions(settings));
+                const pixelResult = await runPixelPipeline(buildPixelArtOptions(settings));
                 inputImageData = pixelResult.imageData;
                 console.log(`Pixel art pre-processing complete: ${inputImageData.width}x${inputImageData.height}`);
             }
             
-            return await unfake.extractLayers({
+            return await extractLayers({
                 file: settings.layersPixelArtFirst ? null : appState.originalFile,
                 imageData: inputImageData,
                 alphaThreshold: settings.layersAlphaThreshold,
@@ -1988,6 +2018,32 @@ function downloadVector() {
     URL.revokeObjectURL(url);
 }
 
+function showProcessingProgress(title = 'Processing…') {
+    elements.resultArea.innerHTML = `
+        <div class="processing-progress placeholder">
+            <div class="placeholder-icon">⏳</div>
+            <p>${title}</p>
+            <div class="progress-log" id="progress-log"></div>
+        </div>
+    `;
+}
+
+function appendProgressLog(text, level = 'log') {
+    const log = document.getElementById('progress-log');
+    if (!log) return;
+    const line = document.createElement('div');
+    line.className = `progress-line progress-${level}`;
+    line.textContent = text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+}
+
+async function bindProgressLogger() {
+    const { setProgressHandler } = await import('../lib/utils.js');
+    setProgressHandler(({ level, text }) => appendProgressLog(text, level));
+    return () => setProgressHandler(null);
+}
+
 // Set processing state
 function setProcessingState(processing) {
     appState.isProcessing = processing;
@@ -2011,8 +2067,8 @@ function updateProcessButtonText() {
 
 // Update UI based on current state
 function updateUI() {
-    // Show/hide process button
-    if (appState.originalImage && appState.opencvReady) {
+    // Show/hide process button — Pixel Art / Layers need no OpenCV
+    if (appState.originalImage) {
         elements.processBtn.style.display = 'block';
     } else {
         elements.processBtn.style.display = 'none';
@@ -2028,14 +2084,13 @@ function updateUI() {
         elements.actionButtons.style.display = 'none';
     }
     
-    // Show OpenCV status
-    if (appState.originalImage && !appState.opencvReady) {
-        // Show loading indicator
+    // Hint when OpenCV will be loaded on first Process
+    if (appState.originalImage && !appState.opencvReady && modeNeedsOpenCV(appState.mode)) {
         elements.resultArea.innerHTML = `
             <div class="placeholder">
-                <div class="placeholder-icon">⏳</div>
-                <p>Loading OpenCV...</p>
-                <p class="upload-hint">Please wait while the image processing library loads</p>
+                <div class="placeholder-icon">ℹ️</div>
+                <p>OpenCV loads in background on first Process</p>
+                <p class="upload-hint">UI stays responsive while ~10 MB compiles in a worker</p>
             </div>
         `;
     }
@@ -2325,21 +2380,8 @@ function resetToDefaultSettings() {
         }
     });
     
-    // Force Tweakpane to update by recreating it completely
-    if (window.appPanes && window.appPanes[appState.mode]) {
-        const currentPane = window.appPanes[appState.mode];
-        const container = currentPane.element.parentNode;
-        
-        // Destroy current pane
-        currentPane.dispose();
-        
-        // Clear container
-        container.innerHTML = '';
-        
-        // Recreate pane by calling initializeTweakpane again
-        initializeTweakpane();
-        
-        // Update pane visibility
+    if (window.appPanes?.[appState.mode]) {
+        window.appPanes[appState.mode].refresh();
         updateSettingsVisibility();
     }
     
