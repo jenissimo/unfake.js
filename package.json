@@ -1,0 +1,17 @@
+{
+  "name": "unfake.js",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI upscaled image → pixel art & vector converter (browser tool + lib)",
+  "scripts": {
+    "vendor": "bun scripts/vendor-copy.mjs",
+    "deploy": "bun scripts/deploy.ts",
+    "deploy:zip": "bun scripts/deploy.ts --zip"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "fflate": "^0.8.2",
+    "typescript": "^5.8.3"
+  }
+}
