@@ -29,6 +29,8 @@ class Magnifier {
         this.isDestroyed = false;
         this.rafScheduled = false;
         this.isUpdating = false;
+        this.updatingTarget = null;
+        this.lastRenderedTarget = null;
         
         this.init();
     }
@@ -121,7 +123,7 @@ class Magnifier {
     
     // Handle mouse movement
     handleMouseMove(e) {
-        if (!this.isActive || this.isUpdating) return;
+        if (!this.isActive) return;
 
         this.mouseX = e.clientX;
         this.mouseY = e.clientY;
@@ -166,8 +168,10 @@ class Magnifier {
         const originalImage = document.getElementById('original-image');
         const resultImages = document.querySelectorAll('#result-area img, #result-area svg, #result-area canvas');
         
-        // Check original image first
-        if (originalImage && this.isPointInElement(x, y, originalImage)) {
+        // Check original image first (skip if hidden or not yet loaded)
+        if (originalImage && originalImage.offsetParent !== null
+            && originalImage.naturalWidth > 0
+            && this.isPointInElement(x, y, originalImage)) {
             return originalImage;
         }
         
@@ -194,9 +198,29 @@ class Magnifier {
         }
     }
 
+    // Apply cached image source and sizing for the current target
+    applyCachedBackground() {
+        const cachedDataUrl = this.imgDataURLCache.get(this.targetImage);
+        const cachedSvgImg = this.svgImageCache.get(this.targetImage);
+        const cachedSrc = cachedDataUrl || cachedSvgImg?.src;
+        if (!cachedSrc) return false;
+
+        const targetRect = this.targetImage.getBoundingClientRect();
+        const zoom = this.options.zoomLevel;
+        const bgSizeX = targetRect.width * zoom;
+        const bgSizeY = targetRect.height * zoom;
+
+        this.element.style.backgroundSize = `${bgSizeX}px ${bgSizeY}px`;
+        this.element.style.imageRendering = this.options.crispPixels ? 'pixelated' : 'auto';
+        this.element.style.backgroundImage = `url("${cachedSrc}")`;
+        this.lastRenderedTarget = this.targetImage;
+        return true;
+    }
+
     // Update magnified content
     updateMagnification() {
-        if (!this.targetImage || this.isDestroyed || this.isUpdating) return;
+        if (!this.targetImage || this.isDestroyed) return;
+        if (this.isUpdating && this.updatingTarget === this.targetImage) return;
 
         const setBackgroundPosition = () => {
             const targetRect = this.targetImage.getBoundingClientRect();
@@ -212,14 +236,23 @@ class Magnifier {
             this.updatePosition();
         };
 
-        // If data URL is already cached, just update the position
+        // If data URL is already cached, apply it when switching between images
         if (this.imgDataURLCache.has(this.targetImage) || this.svgImageCache.has(this.targetImage)) {
+            if (this.lastRenderedTarget !== this.targetImage) {
+                this.applyCachedBackground();
+            }
             setBackgroundPosition();
             return;
         }
 
         // --- Data URL generation (only runs once per image) ---
+        // Switched to a not-yet-cached target: clear the stale background so the
+        // magnifier never shows another image's pixels while (re)generating.
+        if (this.lastRenderedTarget !== this.targetImage) {
+            this.element.style.backgroundImage = 'none';
+        }
         this.isUpdating = true;
+        this.updatingTarget = this.targetImage;
         this.element.style.cursor = 'wait';
 
         const tagName = this.targetImage.tagName.toLowerCase();
@@ -227,10 +260,15 @@ class Magnifier {
         const zoom = this.options.zoomLevel;
         const targetRect = this.targetImage.getBoundingClientRect();
 
+        const finishUpdating = () => {
+            this.isUpdating = false;
+            this.updatingTarget = null;
+            this.element.style.cursor = 'default';
+        };
+
         const setBackground = (imageElement, srcOverride = null) => {
             if (!imageElement && !srcOverride) {
-                this.isUpdating = false;
-                this.element.style.cursor = 'default';
+                finishUpdating();
                 return;
             }
 
@@ -241,26 +279,33 @@ class Magnifier {
             this.element.style.imageRendering = this.options.crispPixels ? 'pixelated' : 'auto';
             
             const targetSrc = srcOverride || imageElement.src;
-            if (targetSrc && this.element.style.backgroundImage !== `url("${targetSrc}")`) {
+            if (targetSrc) {
                 this.element.style.backgroundImage = `url("${targetSrc}")`;
             }
+            this.lastRenderedTarget = this.targetImage;
             
             setBackgroundPosition();
-            this.isUpdating = false;
-            this.element.style.cursor = 'default';
+            finishUpdating();
         };
 
+        const imageBeingProcessed = this.targetImage;
+
         if (isSVG) {
-            let cachedImg = new Image();
-            cachedImg.loading = true;
-            this.svgImageCache.set(this.targetImage, cachedImg);
-            
+            const cachedImg = new Image();
             const svgString = new XMLSerializer().serializeToString(this.targetImage);
             const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
-            
+
             cachedImg.onload = () => {
+                if (this.isDestroyed || this.targetImage !== imageBeingProcessed) {
+                    finishUpdating();
+                    if (this.isActive) this.updateMagnification();
+                    return;
+                }
+                // Cache only after decode, so the cached branch never serves an
+                // undecoded SVG.
+                this.svgImageCache.set(imageBeingProcessed, cachedImg);
                 setBackground(cachedImg);
-            }
+            };
             cachedImg.src = svgDataUrl;
 
         } else { // Handles <img> and <canvas>
@@ -273,8 +318,7 @@ class Magnifier {
                 const sourceHeight = isImg ? this.targetImage.naturalHeight : this.targetImage.height;
 
                 if (sourceWidth === 0 || sourceHeight === 0) {
-                    this.isUpdating = false;
-                    this.element.style.cursor = 'default';
+                    finishUpdating();
                     return;
                 }
 
@@ -286,23 +330,33 @@ class Magnifier {
                 
                 try {
                     const dataURL = canvas.toDataURL();
-                    this.imgDataURLCache.set(this.targetImage, dataURL);
+                    this.imgDataURLCache.set(imageBeingProcessed, dataURL);
+                    if (this.targetImage !== imageBeingProcessed) {
+                        finishUpdating();
+                        if (this.isActive) this.updateMagnification();
+                        return;
+                    }
                     setBackground(null, dataURL);
                 } catch (e) {
                     console.error("Magnifier: Could not generate data URL, falling back to src.", e);
+                    if (this.targetImage !== imageBeingProcessed) {
+                        finishUpdating();
+                        if (this.isActive) this.updateMagnification();
+                        return;
+                    }
                     if (isImg) {
                         setBackground(this.targetImage); // Fallback for tainted <img>
+                    } else {
+                        finishUpdating();
                     }
-                    this.isUpdating = false;
-                    this.element.style.cursor = 'default';
                 }
             } else if (isImg) {
-                this.targetImage.onload = () => {
-                    if(!this.isDestroyed) {
-                        this.isUpdating = false;
-                        this.updateMagnification();
-                    }
-                };
+                // Not decoded yet — release the lock now and retry once it loads
+                // (don't leave isUpdating stuck or clobber the element's onload).
+                finishUpdating();
+                imageBeingProcessed.addEventListener('load', () => {
+                    if (!this.isDestroyed && this.isActive) this.updateMagnification();
+                }, { once: true });
             }
         }
     }
@@ -317,6 +371,9 @@ class Magnifier {
         if (this.imgDataURLCache && this.imgDataURLCache.has(element)) {
             this.imgDataURLCache.delete(element);
             if (this.options.debug) console.log('Magnifier: Cleared DataURL cache for element');
+        }
+        if (this.lastRenderedTarget === element) {
+            this.lastRenderedTarget = null;
         }
     }
 
