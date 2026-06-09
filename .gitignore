@@ -54,4 +54,20 @@ temp/
 
 # Local test images / fixtures (not part of the repo)
 samples/
-test-images/ 
+test-images/
+
+# Rust
+/target/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Experiments / ML research — not part of the product repo
+experiments/
+
+# Internal-only docs (kept locally, not committed)
+/ROADMAP.md
+/CHANGELOG.md
+
+.playwright-mcp/ 

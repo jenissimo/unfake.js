@@ -4,9 +4,7 @@
  * image manipulation, color quantization, and mathematical calculations.
  */
 
-import * as IQ from 'image-q';
-import { ensurePakoAndUPNG } from './scripts.js';
-import { cvReady as ensureOpenCVWorker, runOp } from './opencv-client.js';
+import { runCoreOp } from './core-client.js';
 
 let progressHandler = null;
 
@@ -51,26 +49,6 @@ export const logger = {
   },
 };
 
-// --- OpenCV Integration (lazy-loaded classic script) ----------------------------
-
-let cvPromise = null;
-
-/**
- * Lazy-load OpenCV for Pixel Art, Vector, and Layers (pixel-art-first).
- * @returns {Promise<object>} The initialized `cv` namespace.
- */
-export async function cvReady() {
-  if (cvPromise) return cvPromise;
-
-  cvPromise = (async () => {
-    logger.log('Loading OpenCV worker...');
-    const handle = await ensureOpenCVWorker();
-    logger.log('OpenCV worker ready.');
-    return handle;
-  })();
-
-  return cvPromise;
-}
 
 // --- Image Loading and Conversion --------------------------------------------
 
@@ -107,28 +85,23 @@ export async function fileToImageData(file) {
 }
 
 /**
- * Encodes ImageData to a PNG buffer using UPNG.js, with a canvas fallback.
+ * Encodes ImageData to a PNG buffer via unfake-core (png crate), canvas fallback.
  * @param {ImageData} imgData The image data to encode.
  * @returns {Promise<Uint8Array>} A Uint8Array containing the PNG file data.
  */
 export async function encodePng(imgData) {
-  await ensurePakoAndUPNG();
-  const { UPNG } = window;
-
-  if (UPNG?.encode) {
-    const buffer = UPNG.encode([imgData.data.buffer], imgData.width, imgData.height, 0);
-    return new Uint8Array(buffer);
+  try {
+    return await runCoreOp('encodePng', { image: imgData });
+  } catch (e) {
+    logger.warn('core PNG encode failed, canvas fallback:', e);
+    const canvas = document.createElement('canvas');
+    canvas.width = imgData.width;
+    canvas.height = imgData.height;
+    canvas.getContext('2d').putImageData(imgData, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('Canvas fallback for PNG encoding failed.');
+    return new Uint8Array(await blob.arrayBuffer());
   }
-
-  logger.warn('UPNG.js not found, using slower canvas fallback for PNG encoding.');
-  const canvas = document.createElement('canvas');
-  canvas.width = imgData.width;
-  canvas.height = imgData.height;
-  canvas.getContext('2d').putImageData(imgData, 0, 0);
-
-  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-  if (!blob) throw new Error('Canvas fallback for PNG encoding failed.');
-  return new Uint8Array(await blob.arrayBuffer());
 }
 
 // --- Image Processing and Cleanup --------------------------------------------
@@ -140,7 +113,7 @@ export async function encodePng(imgData) {
  * @returns {Promise<ImageData>} The cleaned image data.
  */
 export async function morphologicalCleanup(imgData) {
-  return runOp('morphologicalCleanup', { image: imgData });
+  return runCoreOp('morphCleanup', { image: imgData });
 }
 
 /**
@@ -239,11 +212,11 @@ export async function detectOptimalColorCount(imgData, {
     maxColors = 32
 } = {}) {
     logger.log('Detecting optimal color count...');
-    const result = await runOp('detectOptimalColorCount', {
+    const result = await runCoreOp('detectColorCount', {
         image: imgData,
         downsampleTo,
-        colorQuantizeFactor,
-        dominanceThreshold,
+        quantize: colorQuantizeFactor,
+        dominance: dominanceThreshold,
         maxColors,
     });
     logger.log(`Final auto-detected color count: ${result}`);
@@ -252,106 +225,21 @@ export async function detectOptimalColorCount(imgData, {
 
 
 /**
- * Maps every pixel to its nearest palette color using squared euclidean
- * distance over RGBA (same metric as image-q's 'euclidean'). The nearest match
- * is memoized per unique source color: pixel art reuses very few colors, so the
- * expensive palette search runs once per unique color rather than once per pixel.
- * @param {ImageData} imgData The input image data.
- * @param {{r:number,g:number,b:number,a:number}[]} paletteColors The target palette.
- * @returns {ImageData} A new ImageData with every pixel snapped to the palette.
- */
-function applyPaletteNearest(imgData, paletteColors) {
-    const { data, width, height } = imgData;
-    const out = new Uint8ClampedArray(data.length);
-    const cache = new Map();
-
-    for (let i = 0; i < data.length; i += 4) {
-        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-        const key = ((r << 24) | (g << 16) | (b << 8) | a) >>> 0; // unsigned RGBA key
-        let nearest = cache.get(key);
-        if (nearest === undefined) {
-            let bestIdx = 0;
-            let bestDist = Infinity;
-            for (let p = 0; p < paletteColors.length; p++) {
-                const c = paletteColors[p];
-                const dr = r - c.r, dg = g - c.g, db = b - c.b, da = a - c.a;
-                const dist = dr * dr + dg * dg + db * db + da * da;
-                if (dist < bestDist) {
-                    bestDist = dist;
-                    bestIdx = p;
-                    if (dist === 0) break; // exact match, can't do better
-                }
-            }
-            nearest = paletteColors[bestIdx];
-            cache.set(key, nearest);
-        }
-        out[i] = nearest.r;
-        out[i + 1] = nearest.g;
-        out[i + 2] = nearest.b;
-        out[i + 3] = nearest.a;
-    }
-
-    return new ImageData(out, width, height);
-}
-
-/**
- * Quantizes image colors using image-q library with a fallback.
+ * Quantize colors via unfake-core (imagequant for auto palettes, nearest-remap
+ * for a fixed palette). Runs in the WASM worker.
  * @param {ImageData} imgData The input image data.
  * @param {number} maxColors The maximum number of colors.
- * @param {string[]|null} [fixedPalette=null] Optional fixed palette of hex colors.
- * @returns {{quantized: ImageData, colorsUsed: number}}
+ * @param {{r,g,b,a}[]|null} [fixedPalette=null] Optional fixed palette.
+ * @returns {Promise<{quantized: ImageData, colorsUsed: number, palette: object[]}>}
  */
-export function quantizeImage(imgData, maxColors, fixedPalette = null) {
-    try {
-        const inPointContainer = IQ.utils.PointContainer.fromImageData(imgData);
-        const palette = fixedPalette?.length
-            ? IQ.utils.Palette.createByColors(fixedPalette)
-            : IQ.buildPaletteSync([inPointContainer], {
-                colors: maxColors,
-                colorDistanceFormula: 'euclidean',
-                paletteQuantization: 'wuquant',
-              });
-
-        // Extract palette in {r, g, b, a} format for tracers
-        const tracerPalette = palette.getPointContainer().getPointArray().map(p => ({
-            r: Math.round(p.r), g: Math.round(p.g), b: Math.round(p.b), a: Math.round(p.a)
-        }));
-
-        // Map pixels to the palette ourselves instead of IQ.applyPaletteSync.
-        // image-q's 'nearest' apply searches every pixel against every palette
-        // entry (O(pixels * colors)), which dominates runtime and scales linearly
-        // with the palette size — painful at 256 colors and worse beyond. Pixel
-        // art has few unique colors, so memoizing the lookup per unique source
-        // color makes the cost O(unique * colors + pixels) and keeps large
-        // palettes (512/1024) fast.
-        const quantized = applyPaletteNearest(imgData, tracerPalette);
-
-        return {
-            quantized: finalizePixels(quantized),
-            colorsUsed: tracerPalette.length,
-            palette: tracerPalette,
-        };
-    } catch (error) {
-        logger.warn('image-q quantization failed, using fallback:', error);
-        const { data, width, height } = imgData;
-        const result = new Uint8ClampedArray(data.length);
-        const step = 256 / Math.max(1, maxColors - 1);
-        for (let i = 0; i < data.length; i += 4) {
-            result[i] = Math.round(data[i] / step) * step;
-            result[i + 1] = Math.round(data[i + 1] / step) * step;
-            result[i + 2] = Math.round(data[i + 2] / step) * step;
-            result[i + 3] = data[i + 3];
-        }
-        const quantized = finalizePixels(new ImageData(result, width, height));
-        const palette = getPaletteAsObjects(quantized);
-        
-        return {
-            quantized,
-            colorsUsed: palette.length,
-            palette,
-        };
-    }
-} 
+export async function quantizeImage(imgData, maxColors, fixedPalette = null) {
+    const r = await runCoreOp('quantize', { image: imgData, maxColors, fixedPalette });
+    return {
+        quantized: finalizePixels(r.quantized),
+        colorsUsed: r.colorsUsed,
+        palette: r.palette,
+    };
+}
 
 /**
  * Counts the number of unique opaque colors in an ImageData object.
@@ -458,60 +346,6 @@ export function detectScale(signal) {
   const modeSpacing = mode(spacings);
   logger.log(`detectScale: Using fallback mode spacing: ${modeSpacing}`);
   return modeSpacing > 1 ? modeSpacing : 1;
-}
-
-/**
- * Finds the optimal crop offset to align an image with a pixel grid.
- * @param {object} grayMat An OpenCV grayscale Mat object.
- * @param {number} scale The grid scale factor.
- * @param {object} cv The OpenCV namespace.
- * @returns {{x: number, y: number}} The optimal (x, y) crop offset.
- */
-export function findOptimalCrop(grayMat, scale, cv) {
-  const sobelX = new cv.Mat();
-  const sobelY = new cv.Mat();
-  
-  try {
-    cv.Sobel(grayMat, sobelX, cv.CV_32F, 1, 0, 3);
-    cv.Sobel(grayMat, sobelY, cv.CV_32F, 0, 1, 3);
-
-    const profileX = new Float32Array(grayMat.cols).fill(0);
-    const profileY = new Float32Array(grayMat.rows).fill(0);
-    const dataX = sobelX.data32F;
-    const dataY = sobelY.data32F;
-    
-    for (let y = 0; y < grayMat.rows; y++) {
-      for (let x = 0; x < grayMat.cols; x++) {
-        const idx = y * grayMat.cols + x;
-        profileX[x] += Math.abs(dataX[idx]);
-        profileY[y] += Math.abs(dataY[idx]);
-      }
-    }
-
-    const findBestOffset = (profile, s) => {
-      let bestOffset = 0, maxScore = -1;
-      for (let offset = 0; offset < s; offset++) {
-        let currentScore = 0;
-        for (let i = offset; i < profile.length; i += s) {
-          currentScore += profile[i] || 0;
-        }
-        if (currentScore > maxScore) {
-          maxScore = currentScore;
-          bestOffset = offset;
-        }
-      }
-      return bestOffset;
-    };
-
-    const bestDx = findBestOffset(profileX, scale);
-    const bestDy = findBestOffset(profileY, scale);
-    logger.log(`Optimal crop found: x=${bestDx}, y=${bestDy}`);
-    return { x: bestDx, y: bestDy };
-
-  } finally {
-    sobelX.delete();
-    sobelY.delete();
-  }
 }
 
 /**

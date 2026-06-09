@@ -8,12 +8,10 @@ import {
 import { vectorizeImage } from './vector.js';
 import { extractLayers, extractMaskLayer, extractDetailsLayer } from './layers.js';
 import { 
-  cvReady, 
   fileToImageData, 
   morphologicalCleanup,
   countColors,
   detectScale,
-  findOptimalCrop,
   median,
   mode,
   mean,
@@ -35,12 +33,10 @@ export {
   extractDetailsLayer,
 };
 export { 
-  cvReady, 
   fileToImageData, 
   morphologicalCleanup,
   countColors,
   detectScale,
-  findOptimalCrop,
   median,
   mode,
   mean,
@@ -61,12 +57,10 @@ export default {
   extractMaskLayer,
   extractDetailsLayer,
   utils: {
-    cvReady, 
     fileToImageData, 
     morphologicalCleanup,
     countColors,
     detectScale,
-    findOptimalCrop,
     median,
     mode,
     mean,

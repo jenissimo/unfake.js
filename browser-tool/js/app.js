@@ -31,7 +31,7 @@ let appState = {
         layers: null
     },
     isProcessing: false,
-    opencvReady: false,
+    coreReady: false,
     magnifier: null,
     originalPalette: {
         pixel: null,
@@ -62,7 +62,6 @@ function initializeApp() {
         cacheElements();
         initializeTheme();
         bindEvents();
-        appState.opencvReady = false;
         initializeMagnifier();
 
         window.addEventListener('unfake:file', (e) => adoptBootFile(e.detail));
@@ -255,7 +254,7 @@ async function initializeTweakpane() {
         maxColors: 16,
         autoColorCount: false,
         snapGrid: true,
-        gridDetectionAlgorithm: 'auto-tiled', // 'auto-tiled', 'auto-legacy'
+        gridDetectionAlgorithm: 'edge-tiled', // 'edge-tiled' (default), 'edge-legacy', 'auto-tiled', 'auto-legacy'
         downscaleMethod: 'dominant',
         domMeanThreshold: 0.15,
         cleanupMorph: true,
@@ -338,6 +337,7 @@ async function initializeTweakpane() {
         label: 'Downscaling Method',
         options: {
             'dominant (picks the most frequent color in each block)': 'dominant',
+            'quant→vote (snap to palette, then vote — clean mixel edges)': 'qvote',
             'nearest (good for clean images)': 'nearest',
             'content-adaptive (experimental)': 'content-adaptive',
             'median (smooths noise)': 'median',
@@ -356,8 +356,9 @@ async function initializeTweakpane() {
     gridDetectionFolder.addBinding(settings, 'gridDetectionAlgorithm', {
         label: 'Algorithm',
         options: {
-            'Complex Grid': 'auto-tiled',
-            'Simple Grid': 'auto-legacy',
+            'Complex Grid (Edge)': 'edge-tiled',
+            'Simple Grid (Edge)': 'edge-legacy',
+            'Auto (runs→edge)': 'auto-tiled',
         }
     });
     
@@ -1233,28 +1234,6 @@ function handleReset() {
     updateUI();
 }
 
-function modeNeedsOpenCV(mode, settings = window.appSettings) {
-    if (mode === 'vector') return true;
-    if (mode === 'layers') return !!settings?.layersPixelArtFirst;
-    if (mode !== 'pixel' || !settings) return false;
-
-    if (!settings.autoPixelSize) {
-        if (settings.snapGrid) return true;
-        if (settings.cleanupMorph) return true;
-        if (settings.downscaleMethod === 'content-adaptive') return true;
-        if (settings.autoColorCount) return true;
-        return false;
-    }
-
-    const [detectMethod] = (settings.gridDetectionAlgorithm || 'auto-tiled').split('-');
-    if (detectMethod === 'auto' || detectMethod === 'edge') return true;
-    if (settings.snapGrid) return true;
-    if (settings.cleanupMorph) return true;
-    if (settings.downscaleMethod === 'content-adaptive') return true;
-    if (settings.autoColorCount) return true;
-    return false;
-}
-
 // Handle process button click
 async function handleProcess() {
     if (!appState.originalImage) {
@@ -1264,32 +1243,20 @@ async function handleProcess() {
 
     let unbindProgress = null;
 
-    if (!appState.opencvReady && modeNeedsOpenCV(appState.mode)) {
+    if (appState.mode === 'pixel' && !appState.coreReady) {
         setProcessingState(true);
-        showProcessingProgress('Loading OpenCV in background…');
-        unbindProgress = await bindProgressLogger();
-        appendProgressLog('Compiling OpenCV WASM in worker…');
-        setBootStatus('Loading OpenCV in background…', 'boot-warn');
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        showProcessingProgress('Loading unfake-core WASM…');
         try {
-            const { cvReady } = await import('../lib/utils.js');
-            await cvReady();
-            appState.opencvReady = true;
-            appendProgressLog('OpenCV worker ready');
-            setBootStatus('OpenCV ready', 'boot-ok');
-            hideBootStatusSoon(2000);
+            const { coreReady } = await import('../lib/core-client.js');
+            appState.coreReady = await coreReady();
+            console.log(appState.coreReady ? 'unfake-core WASM ready' : 'unfake-core unavailable — JS fallback');
         } catch (err) {
-            console.error('Failed to load OpenCV:', err);
-            appendProgressLog(`OpenCV error: ${err.message}`, 'error');
-            setBootStatus(`OpenCV error: ${err.message}`, 'boot-error');
-            alert(`This mode requires OpenCV, which failed to load.\n\n${err.message}`);
-            unbindProgress?.();
-            setProcessingState(false);
-            return;
+            console.warn('unfake-core preload failed:', err);
+            appState.coreReady = false;
         }
         setProcessingState(false);
     }
-    
+
     setProcessingState(true);
     if (!unbindProgress) {
         showProcessingProgress('Processing…');
@@ -1483,12 +1450,6 @@ function isValidResult(result, mode) {
 
 // Display pixel art result
 function displayPixelArtResult(result) {
-    if (typeof UPNG === 'undefined') {
-        console.error('UPNG.js is not available.');
-        alert('A required library (UPNG.js) is missing. Please reload the page.');
-        return;
-    }
-
     // Validate result structure
     if (!result || !result.png || typeof result.png.byteLength === 'undefined') {
         console.error('Invalid pixel art result:', result);
@@ -1508,11 +1469,9 @@ function displayPixelArtResult(result) {
     console.log('Palette size:', result.palette?.length || 'undefined');
     
     try {
-        // Decode PNG and get raw RGBA pixel data to avoid color space issues with drawImage
-        const png = UPNG.decode(result.png);
-        const rgba8 = UPNG.toRGBA8(png)[0];
-        const rgba8Clamped = new Uint8ClampedArray(rgba8);
-        const imageData = new ImageData(rgba8Clamped, png.width, png.height);
+        // Use the pipeline's ImageData directly (no encode→decode round-trip).
+        const imageData = result.imageData;
+        const png = imageData; // alias: downstream reads png.width / png.height
 
         // Get the visual size of the original image in the interface
         const originalImgElement = elements.originalImage;
@@ -2020,10 +1979,9 @@ function downloadVector() {
 
 function showProcessingProgress(title = 'Processing…') {
     elements.resultArea.innerHTML = `
-        <div class="processing-progress placeholder">
-            <div class="placeholder-icon">⏳</div>
-            <p>${title}</p>
-            <div class="progress-log" id="progress-log"></div>
+        <div class="processing-progress">
+            <div class="spinner" role="status" aria-label="${title}"></div>
+            <p class="spinner-caption">${title}</p>
         </div>
     `;
 }
@@ -2084,16 +2042,6 @@ function updateUI() {
         elements.actionButtons.style.display = 'none';
     }
     
-    // Hint when OpenCV will be loaded on first Process
-    if (appState.originalImage && !appState.opencvReady && modeNeedsOpenCV(appState.mode)) {
-        elements.resultArea.innerHTML = `
-            <div class="placeholder">
-                <div class="placeholder-icon">ℹ️</div>
-                <p>OpenCV loads in background on first Process</p>
-                <p class="upload-hint">UI stays responsive while ~10 MB compiles in a worker</p>
-            </div>
-        `;
-    }
 }
 
 function clearResultArea() {
@@ -2338,7 +2286,7 @@ function resetToDefaultSettings() {
         maxColors: 16,
         autoColorCount: false,
         snapGrid: true,
-        gridDetectionAlgorithm: 'auto-tiled',
+        gridDetectionAlgorithm: 'edge-tiled',
         downscaleMethod: 'dominant',
         domMeanThreshold: 0.15,
         cleanupMorph: true,

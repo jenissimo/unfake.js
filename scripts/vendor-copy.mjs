@@ -11,13 +11,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const vendorDir = join(root, 'browser-tool', 'vendor');
 
 const files = {
-  'image-q.js': 'https://cdn.jsdelivr.net/npm/image-q@4.0.0/dist/esm/image-q.mjs',
   'tweakpane.min.js': 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js',
-  'svd.js': 'https://cdn.jsdelivr.net/npm/svd-js@1.1.1/build-es/svd.js',
-  'pako.min.js': 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js',
-  'UPNG.js': 'https://cdn.jsdelivr.net/npm/upng-js@2.1.0/UPNG.js',
   'imagetracer_v1.2.6.js': 'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.js',
-  'opencv.js': 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js',
 };
 
 await mkdir(vendorDir, { recursive: true });

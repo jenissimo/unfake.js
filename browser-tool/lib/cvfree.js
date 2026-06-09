@@ -49,7 +49,7 @@ export function boundarySignals(img) {
   return { col, row };
 }
 
-function peakLag(sig) {
+export function peakLag(sig) {
   const n = sig.length;
   const maxLag = maxPeriod(n);
   let mean = 0;

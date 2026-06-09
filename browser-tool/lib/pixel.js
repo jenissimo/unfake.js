@@ -3,7 +3,6 @@
  * Handles intelligent scale detection, color quantization, downscaling, and PNG encoding.
  */
 
-import * as IQ from 'image-q';
 import {
     fileToImageData,
     morphologicalCleanup,
@@ -24,7 +23,9 @@ import {
     quantizeImage,
     detectOptimalColorCount,
 } from './utils.js';
-import { runOp } from './opencv-client.js';
+import { runCoreOp, ensureCoreWorker, CORE_DS } from './core-client.js';
+import { findOptimalCropOffset, cropImageData } from './cvfree.js';
+import { tiledEdgeDetect, singleRegionEdgeDetect } from './edge-detect.js';
 
 /**
  * Upper bound for the "Max Colors" control. Selecting this value means "no
@@ -73,16 +74,19 @@ export function runsBasedDetect(imgData) {
 }
 
 /**
- * Edge-aware scale detection (OpenCV Sobel, single ROI).
+ * Edge-aware scale detection, single ROI (unfake-core WASM, JS canonical fallback).
  * @param {ImageData} imgData The input image data.
  * @returns {Promise<number>} The detected scale factor.
  */
 export async function legacyEdgeAwareDetect(imgData) {
-    return runOp('legacyEdgeDetect', { image: imgData });
+    if (await ensureCoreWorker()) {
+        return runCoreOp('detectLegacy', { image: imgData });
+    }
+    return singleRegionEdgeDetect(imgData);
 }
 
 /**
- * Detects pixel art scale using a robust, tiled edge-aware algorithm (OpenCV).
+ * Detects pixel art scale via tiled edge-aware algorithm (unfake-core WASM, JS canonical fallback).
  * @param {ImageData} imgData The input image data.
  * @returns {Promise<number>} The detected scale factor.
  */
@@ -93,13 +97,28 @@ export async function edgeAwareDetect(imgData) {
     }
 
     try {
-        const bestScale = await runOp('tiledEdgeDetect', { image: imgData });
-        logger.log(`Edge-aware detection complete. Best guess: ${bestScale}`);
+        if (await ensureCoreWorker()) {
+            const bestScale = await runCoreOp('detectTiled', { image: imgData });
+            logger.log(`Edge-aware (unfake-core WASM) scale: ${bestScale}`);
+            return bestScale;
+        }
+        const bestScale = tiledEdgeDetect(imgData);
+        logger.log(`Edge-aware (JS canonical) scale: ${bestScale}`);
         return bestScale;
     } catch (error) {
-        logger.error('Edge-aware detection failed critically:', error);
+        logger.error('Edge-aware detection failed:', error);
         return 1;
     }
+}
+
+async function coreDownscale(imgData, scale, methodId, domThreshold, alignGrid = false) {
+    return runCoreOp('downscale', {
+        image: imgData,
+        scale,
+        method: methodId,
+        domThreshold,
+        alignGrid,
+    });
 }
 
 
@@ -196,19 +215,6 @@ export function downscaleByDominantColor(imgData, scale, threshold = 0.15) {
     return new ImageData(outData, targetW, targetH);
 }
 
-/**
- * EXPERIMENTAL: Content-adaptive downscaling.
- * High-quality but computationally expensive. Separates Alpha channel for proper handling.
- * based on https://johanneskopf.de/publications/downscaling/
- * @param {ImageData} imgData - Source image.
- * @param {number} targetW - Target width.
- * @param {number} targetH - Target height.
- * @returns {Promise<ImageData>} Downscaled image.
- */
-export async function contentAdaptiveDownscale(imgData, targetW, targetH) {
-    logger.warn('Using experimental, CPU-intensive content-adaptive downscaling.');
-    return runOp('contentAdaptiveDownscale', { image: imgData, targetW, targetH });
-}
 
 /** Main image processing pipeline. */
 export async function processImage({
@@ -216,7 +222,7 @@ export async function processImage({
     maxColors = 32,
     autoColorCount = false,
     manualScale = null,
-    detectMethod = 'auto', // 'auto', 'runs', 'edge'
+    detectMethod = 'edge', // 'edge' (default — robust on real AI art), 'auto' (runs→edge), 'runs'
     edgeDetectMethod = 'tiled', // 'tiled' or 'legacy'
     downscaleMethod = 'dominant', // 'dominant', 'median', 'mode', 'mean', 'nearest', 'content-adaptive'
     domMeanThreshold = 0.15, // CHANGED: Increased from 0.05 for more robust dominant color selection.
@@ -224,6 +230,7 @@ export async function processImage({
     fixedPalette = null,
     alphaThreshold = 128,
     snapGrid = true,
+    useCvFreeSnap = true,
 }) {
     if (!file) throw new Error('No file provided.');
 
@@ -243,6 +250,10 @@ export async function processImage({
 
     // 2. Scale Detection
     let scale = 1;
+    let gridPhase = { x: 0, y: 0 };
+    let effectiveDownscaleMethod = downscaleMethod;
+    let effectiveDomThreshold = domMeanThreshold;
+
     if (manualScale) {
         scale = Math.max(1, Array.isArray(manualScale) ? manualScale[0] : manualScale);
         logger.log(`Using manual scale: ${scale}`);
@@ -251,6 +262,11 @@ export async function processImage({
             'runs': runsBasedDetect,
             'edge': edgeDetectMethod === 'legacy' ? legacyEdgeAwareDetect : edgeAwareDetect,
             'auto': async (img) => {
+                if (await ensureCoreWorker()) {
+                    const s = await runCoreOp('detectAuto', { image: img });
+                    logger.log(`Auto-detect (unfake-core WASM): ${s}`);
+                    return s;
+                }
                 const runsScale = runsBasedDetect(img);
                 if (runsScale > 1) {
                     logger.log('Auto-detect: "runs" method was successful.');
@@ -262,21 +278,40 @@ export async function processImage({
             }
         }[detectMethod];
 
-        scale = await detectionFn(originalForAdaptiveScale);
+        const heuristicScale = await detectionFn(originalForAdaptiveScale);
+        scale = heuristicScale;
     }
     if (scale <= 1 && downscaleMethod !== 'content-adaptive') {
         logger.log('Scale is 1, skipping downscale and grid snapping.');
     }
 
-    // 2.5. Snap to Grid (OpenCV Sobel crop alignment)
+    // 2.5. Snap to Grid (cv-free or OpenCV Sobel crop alignment)
     if (snapGrid && scale > 1) {
         logger.log('Snapping to grid via auto-crop...');
-        const snapped = await runOp('snapToGrid', { image: current, scale });
-        if (snapped.width !== current.width || snapped.height !== current.height) {
-            current = snapped;
-            logger.log(`Image cropped to: ${current.width} x ${current.height}`);
+        if (await ensureCoreWorker()) {
+            const autoCrop = await runCoreOp('cropOffset', { image: current, scale });
+            const cropX = (autoCrop.x + gridPhase.x) % scale;
+            const cropY = (autoCrop.y + gridPhase.y) % scale;
+            const newWidth = Math.floor((current.width - cropX) / scale) * scale;
+            const newHeight = Math.floor((current.height - cropY) / scale) * scale;
+            if (newWidth >= scale && newHeight >= scale) {
+                current = cropImageData(current, cropX, cropY, newWidth, newHeight);
+                logger.log(`Image cropped to: ${current.width} x ${current.height} (unfake-core)`);
+            } else {
+                logger.warn('Snapping skipped: resulting image would be too small.');
+            }
         } else {
-            logger.warn('Snapping skipped: resulting image would be too small.');
+            const autoCrop = findOptimalCropOffset(current, scale);
+            const cropX = (autoCrop.x + gridPhase.x) % scale;
+            const cropY = (autoCrop.y + gridPhase.y) % scale;
+            const newWidth = Math.floor((current.width - cropX) / scale) * scale;
+            const newHeight = Math.floor((current.height - cropY) / scale) * scale;
+            if (newWidth >= scale && newHeight >= scale) {
+                current = cropImageData(current, cropX, cropY, newWidth, newHeight);
+                logger.log(`Image cropped to: ${current.width} x ${current.height} (cv-free fallback)`);
+            } else {
+                logger.warn('Snapping skipped: resulting image would be too small.');
+            }
         }
     }
 
@@ -308,31 +343,55 @@ export async function processImage({
         }
     }
 
-    if (downscaleMethod === 'content-adaptive') {
+    if (effectiveDownscaleMethod === 'content-adaptive') {
         // Не квантизуем до даунскейла
     } else if (effectiveMaxColors < MAX_COLORS && initialColors > effectiveMaxColors) {
         logger.log(`Quantizing from ${initialColors} to a max of ${effectiveMaxColors} colors.`);
-        const quantResult = quantizeImage(current, effectiveMaxColors, fixedPalette);
+        const quantResult = await quantizeImage(current, effectiveMaxColors, fixedPalette);
         current = quantResult.quantized;
         colorsUsed = quantResult.colorsUsed;
     }
 
     // 5. Downscaling
     if (scale > 1) {
-        logger.log(`Downscaling by ${scale}x using '${downscaleMethod}' method.`);
-        if (downscaleMethod === 'dominant') {
-            current = downscaleByDominantColor(current, scale, domMeanThreshold);
-        } else if (downscaleMethod === 'content-adaptive') {
+        logger.log(`Downscaling by ${scale}x using '${effectiveDownscaleMethod}' method.`);
+        const useCoreDs = await ensureCoreWorker();
+        if (effectiveDownscaleMethod === 'dominant') {
+            current = useCoreDs
+                ? await coreDownscale(current, scale, CORE_DS.dominant, effectiveDomThreshold)
+                : downscaleByDominantColor(current, scale, effectiveDomThreshold);
+        } else if (effectiveDownscaleMethod === 'qvote') {
+            if (useCoreDs) {
+                // Rust core quantizes (imagequant) then votes — single canonical qvote.
+                current = await coreDownscale(current, scale, CORE_DS.qvote, effectiveDomThreshold);
+            } else {
+                const qColors = Math.min(effectiveMaxColors, 32);
+                const q = await quantizeImage(current, qColors, fixedPalette);
+                current = downscaleBlock(q.quantized, scale, scale, 'mode', effectiveDomThreshold);
+                colorsUsed = q.colorsUsed;
+            }
+            quantizeAfter = true;
+        } else if (effectiveDownscaleMethod === 'content-adaptive') {
             const targetW = Math.floor(originalSize[0] / scale);
             const targetH = Math.floor(originalSize[1] / scale);
-            current = await contentAdaptiveDownscale(originalForAdaptiveScale, targetW, targetH);
+            current = await runCoreOp('contentAdaptive', { image: originalForAdaptiveScale, targetW, targetH });
             quantizeAfter = true;
-        } else if (['median', 'mode', 'mean', 'nearest'].includes(downscaleMethod)) {
-            current = downscaleBlock(current, scale, scale, downscaleMethod, domMeanThreshold);
+        } else if (['median', 'mode', 'mean', 'nearest'].includes(effectiveDownscaleMethod)) {
+            const coreMethod = {
+                median: CORE_DS.median,
+                mode: CORE_DS.mode,
+                nearest: CORE_DS.nearest,
+                mean: CORE_DS.mean,
+            }[effectiveDownscaleMethod];
+            current = useCoreDs
+                ? await coreDownscale(current, scale, coreMethod, effectiveDomThreshold)
+                : downscaleBlock(current, scale, scale, effectiveDownscaleMethod, effectiveDomThreshold);
             quantizeAfter = true;
         } else {
-            logger.warn(`Unknown downscale method '${downscaleMethod}', falling back to 'median'.`);
-            current = downscaleBlock(current, scale, scale, 'median', domMeanThreshold);
+            logger.warn(`Unknown downscale method '${effectiveDownscaleMethod}', falling back to 'median'.`);
+            current = useCoreDs
+                ? await coreDownscale(current, scale, CORE_DS.median, effectiveDomThreshold)
+                : downscaleBlock(current, scale, scale, 'median', effectiveDomThreshold);
             quantizeAfter = true;
         }
         current = finalizePixels(current);
@@ -341,7 +400,7 @@ export async function processImage({
     // 6. Optional post-downscale quantization
     if (quantizeAfter && effectiveMaxColors < MAX_COLORS) {
         logger.log('Post-downscale quantization...');
-        const quantResult = quantizeImage(current, effectiveMaxColors, fixedPalette);
+        const quantResult = await quantizeImage(current, effectiveMaxColors, fixedPalette);
         current = quantResult.quantized;
         colorsUsed = quantResult.colorsUsed;
     }
@@ -370,7 +429,7 @@ export async function processImage({
                 method: detectMethod,
                 edge_method: manualScale ? null : detectMethod === 'edge' || detectMethod === 'auto' ? edgeDetectMethod : null,
                 detected_scale: scale,
-                manual_scale: manualScale
+                manual_scale: manualScale,
             },
             color_quantization: {
                 max_colors: maxColors,
@@ -379,9 +438,9 @@ export async function processImage({
                 fixed_palette: fixedPalette ? fixedPalette.length : null
             },
             downscaling: {
-                method: downscaleMethod,
+                method: effectiveDownscaleMethod,
                 scale_factor: scale,
-                dom_mean_threshold: domMeanThreshold,
+                dom_mean_threshold: effectiveDomThreshold,
                 applied: scale > 1
             },
             cleanup: {
@@ -394,7 +453,9 @@ export async function processImage({
             },
             grid_snapping: {
                 enabled: snapGrid,
-                applied: snapGrid && scale > 1
+                applied: snapGrid && scale > 1,
+                cvfree: useCvFreeSnap,
+                phase: gridPhase,
             }
         },
         processing_time_ms: Math.round(performance.now() - t0),

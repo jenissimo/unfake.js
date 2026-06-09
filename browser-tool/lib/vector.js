@@ -2,8 +2,13 @@
 // Handles image vectorization using imagetracer.js
 
 import { fileToImageData, logger, quantizeImage, detectOptimalColorCount } from './utils.js';
-import { runOp } from './opencv-client.js';
+import { runCoreOp } from './core-client.js';
 import { ensureImageTracer } from './scripts.js';
+
+/** Run a vector filter op through unfake-core WASM. */
+function coreOrCv(op, payload) {
+    return runCoreOp(op, payload);
+}
 
 /**
  * Applies pre-processing filters to an ImageData object to reduce noise from AI generation.
@@ -13,7 +18,7 @@ import { ensureImageTracer } from './scripts.js';
  */
 export async function preProcessImage(imgData, options) {
     logger.log('Pre-processing image with options:', options);
-    return runOp('vectorPreProcess', { image: imgData, options });
+    return coreOrCv('vectorPreProcess', { image: imgData, options });
 }
 
 /**
@@ -25,7 +30,7 @@ export async function preProcessImage(imgData, options) {
  */
 async function fillBackground(imgData, color = { r: 255, g: 0, b: 255, a: 255 }) {
     logger.log('Applying solid background to prevent edge artifacts...');
-    return runOp('vectorFillBackground', { image: imgData, color });
+    return coreOrCv('vectorFillBackground', { image: imgData, color });
 }
 
 /**
@@ -104,7 +109,7 @@ function hasTransparency(imgData) {
  */
 export async function postProcessImage(imgData, options) {
     logger.log('Post-processing image for smoothing:', options);
-    return runOp('vectorPostProcess', { image: imgData, options });
+    return coreOrCv('vectorPostProcess', { image: imgData, options });
 }
 
 
@@ -176,7 +181,7 @@ export async function vectorizeImage({ file, preProcess, quantize, postProcess, 
                 numColors = await detectOptimalColorCount(imgData);
             }
 
-            const { quantized, palette } = quantizeImage(imgData, numColors);
+            const { quantized, palette } = await quantizeImage(imgData, numColors);
             imgData = quantized;
 
             if (palette?.length) {

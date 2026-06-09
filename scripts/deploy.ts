@@ -13,6 +13,7 @@
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { zipSync } from 'fflate';
+import { $ } from 'bun';
 
 const ROOT = join(import.meta.dir, '..');
 const SRC = join(ROOT, 'browser-tool');
@@ -88,6 +89,9 @@ async function main(): Promise<void> {
   } catch {
     throw new Error(`Source not found: ${SRC}`);
   }
+
+  console.log('[deploy] building unfake-core WASM…');
+  await $`bun run core:wasm`.cwd(ROOT).quiet();
 
   await copyBrowserTool();
 
