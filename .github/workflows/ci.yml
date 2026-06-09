@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Rust tests (golden + unit)
+        run: cargo test --release
+
+      - name: WASM crate compiles
+        run: cargo build -p unfake-wasm --target wasm32-unknown-unknown --release
+
+      - name: Core glue tests
+        run: bun scripts/test-core.mjs

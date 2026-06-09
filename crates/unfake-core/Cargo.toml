@@ -1,0 +1,13 @@
+[package]
+name = "unfake-core"
+description = "Pixel-art scale detection, downscale, and grid snap (canonical CV core)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# default-features off drops `threads` (rayon) — required for wasm32 (no thread
+# support) and gives deterministic native↔wasm parity. Single-threaded is plenty
+# fast for the small images we quantize.
+imagequant = { version = "4.4", default-features = false }
+png = "0.17"

@@ -1,0 +1,15 @@
+[package]
+name = "unfake-cli"
+description = "CLI for unfake-core (batch detect / downscale)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "unfake"
+path = "src/main.rs"
+
+[dependencies]
+unfake-core = { path = "../unfake-core" }
+image = { workspace = true }
+clap = { workspace = true }

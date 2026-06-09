@@ -1,0 +1,13 @@
+[package]
+name = "unfake-wasm"
+description = "wasm-bindgen bindings for unfake-core (browser worker)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+unfake-core = { path = "../unfake-core" }
+wasm-bindgen = { workspace = true }
