@@ -375,7 +375,7 @@ async function initializeTweakpane() {
     domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(settings.downscaleMethod);
     // Add listener to main settings downscale method
     mainPixelFolder.children.forEach(child => {
-        if (child.label === 'Downscaling Method') {
+        if (child.key === 'downscaleMethod') {
             child.on('change', (ev) => {
                 domMeanThresholdBinding.hidden = !['dominant', 'median', 'mode', 'mean'].includes(ev.value);
             });
