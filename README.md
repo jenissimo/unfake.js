@@ -165,7 +165,7 @@ try {
 
 ## Architecture
 
-The image-processing core lives in **`unfake-core`**, a headless Rust crate compiled to **WebAssembly** for the browser tool and to a **native binary** for the CLI (`crates/`). It owns scale detection, grid snapping, downscaling (`dominant` / `median` / `mode` / `mean` / `qvote`), morphological cleanup, color quantization (`imagequant`), content-adaptive downscaling, the vector pre/post filters, and PNG encoding — **no OpenCV**. The JavaScript layer in `browser-tool/` is a thin interface: file I/O, canvas, the Tweakpane UI, and calls into the WASM core.
+The image-processing core lives in **`unfake-core`**, a headless Rust crate compiled to **WebAssembly** for the browser tool and to a **native binary** for the CLI (`crates/`; `unfake detect / snap / downscale / quantize`, with fixed palettes, a reserved chroma color, and a JSON pipeline manifest). It owns scale detection, grid snapping, downscaling (`dominant` / `median` / `mode` / `mean` / `qvote`), morphological cleanup, color quantization (`imagequant`), content-adaptive downscaling, the vector pre/post filters, and PNG encoding — **no OpenCV**. The JavaScript layer in `browser-tool/` is a thin interface: file I/O, canvas, the Tweakpane UI, and calls into the WASM core.
 
 ```sh
 bun run core:wasm   # build the WASM core into browser-tool/vendor/unfake-core/
