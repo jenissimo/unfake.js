@@ -2,12 +2,14 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use image::ImageEncoder;
+use serde_json::{json, Value};
 use unfake_core::{
-    downscale, snap_to_grid, DetectMethod, DownscaleMethod, DownscaleOptions, RgbaImage,
+    downscale, find_optimal_crop_offset, quantize_rgb, snap_to_grid, DetectMethod,
+    DownscaleMethod, DownscaleOptions, QuantizeRgbOptions, RgbaImage,
 };
 
 #[derive(Parser)]
-#[command(name = "unfake", about = "Pixel-art CV core CLI (detect / snap / downscale)")]
+#[command(name = "unfake", about = "Pixel-art CV core CLI (detect / snap / downscale / quantize)")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -20,6 +22,9 @@ enum Commands {
         input: PathBuf,
         #[arg(short, long, value_enum, default_value_t = DetectArg::Tiled)]
         method: DetectArg,
+        /// Write/update a JSON manifest with the detected scale
+        #[arg(long)]
+        manifest: Option<PathBuf>,
     },
     /// Snap image to grid (crop to aligned bounds)
     Snap {
@@ -28,6 +33,9 @@ enum Commands {
         output: Option<PathBuf>,
         #[arg(short, long)]
         scale: u32,
+        /// Write/update a JSON manifest with crop offset and dimensions
+        #[arg(long)]
+        manifest: Option<PathBuf>,
     },
     /// Downscale by block factor
     Downscale {
@@ -42,6 +50,32 @@ enum Commands {
         dom_threshold: f64,
         #[arg(long)]
         no_align: bool,
+        /// Write/update a JSON manifest with output dimensions
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+    },
+    /// Quantize palette (RGB only; alpha is copied through untouched)
+    Quantize {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Max palette size, including the reserved color when set
+        #[arg(short, long, default_value_t = 16)]
+        colors: u32,
+        /// Fixed palette: comma-separated hex colors ("#112233,#445566")
+        /// or a path to a file with one hex color per line
+        #[arg(long)]
+        palette: Option<String>,
+        /// Reserved chroma color ("#RRGGBB"): matching pixels skip palette
+        /// selection and stay bit-exact; the color gets its own palette entry
+        #[arg(long)]
+        reserve_color: Option<String>,
+        /// Per-channel tolerance for matching --reserve-color (0 = exact)
+        #[arg(long, default_value_t = 0)]
+        reserve_tolerance: u8,
+        /// Write/update a JSON manifest with the final palette and parameters
+        #[arg(long)]
+        manifest: Option<PathBuf>,
     },
     /// Evaluate detectors on bghira corpus (__psN in filename)
     EvalBghira {
@@ -95,12 +129,17 @@ impl From<DsArg> for DownscaleMethod {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Detect { input, method } => detect_cmd(&input, method.into()),
+        Commands::Detect {
+            input,
+            method,
+            manifest,
+        } => detect_cmd(&input, method.into(), manifest.as_deref()),
         Commands::Snap {
             input,
             output,
             scale,
-        } => snap_cmd(&input, output.as_deref(), scale),
+            manifest,
+        } => snap_cmd(&input, output.as_deref(), scale, manifest.as_deref()),
         Commands::Downscale {
             input,
             output,
@@ -108,6 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             method,
             dom_threshold,
             no_align,
+            manifest,
         } => downscale_cmd(
             &input,
             output.as_deref(),
@@ -115,6 +155,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             method.into(),
             dom_threshold,
             !no_align,
+            manifest.as_deref(),
+        ),
+        Commands::Quantize {
+            input,
+            output,
+            colors,
+            palette,
+            reserve_color,
+            reserve_tolerance,
+            manifest,
+        } => quantize_cmd(
+            &input,
+            output.as_deref(),
+            colors,
+            palette.as_deref(),
+            reserve_color.as_deref(),
+            reserve_tolerance,
+            manifest.as_deref(),
         ),
         Commands::EvalBghira { dir, method } => eval_bghira_cmd(&dir, method.into()),
     }
@@ -136,8 +194,15 @@ fn save_rgba(img: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-fn detect_cmd(input: &Path, method: DetectMethod) -> Result<(), Box<dyn std::error::Error>> {
+fn detect_cmd(
+    input: &Path,
+    method: DetectMethod,
+    manifest: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if input.is_dir() {
+        if manifest.is_some() {
+            eprintln!("--manifest is ignored for directory input");
+        }
         for entry in std::fs::read_dir(input)? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) == Some("png") {
@@ -148,7 +213,21 @@ fn detect_cmd(input: &Path, method: DetectMethod) -> Result<(), Box<dyn std::err
         }
     } else {
         let img = load_rgba(input)?;
-        println!("{}", method.detect(&img.data, img.width, img.height));
+        let scale = method.detect(&img.data, img.width, img.height);
+        println!("{scale}");
+        if let Some(m) = manifest {
+            update_manifest(
+                m,
+                "detect",
+                json!({
+                    "input": input.display().to_string(),
+                    "method": format!("{method:?}").to_lowercase(),
+                    "scale": scale,
+                    "width": img.width,
+                    "height": img.height,
+                }),
+            )?;
+        }
     }
     Ok(())
 }
@@ -157,8 +236,10 @@ fn snap_cmd(
     input: &Path,
     output: Option<&Path>,
     scale: u32,
+    manifest: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let src = load_rgba(input)?;
+    let crop = find_optimal_crop_offset(&src.data, src.width, src.height, scale);
     let out = snap_to_grid(&src.data, src.width, src.height, scale);
     let dest = output
         .map(|p| p.to_path_buf())
@@ -171,6 +252,20 @@ fn snap_cmd(
         out.width,
         out.height
     );
+    if let Some(m) = manifest {
+        update_manifest(
+            m,
+            "snap",
+            json!({
+                "input": input.display().to_string(),
+                "output": dest.display().to_string(),
+                "scale": scale,
+                "crop": { "x": crop.x, "y": crop.y },
+                "width": out.width,
+                "height": out.height,
+            }),
+        )?;
+    }
     Ok(())
 }
 
@@ -181,6 +276,7 @@ fn downscale_cmd(
     method: DownscaleMethod,
     dom_threshold: f64,
     align_grid: bool,
+    manifest: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let src = load_rgba(input)?;
     let out = downscale(
@@ -205,6 +301,141 @@ fn downscale_cmd(
         out.width,
         out.height
     );
+    if let Some(m) = manifest {
+        update_manifest(
+            m,
+            "downscale",
+            json!({
+                "input": input.display().to_string(),
+                "output": dest.display().to_string(),
+                "scale": scale,
+                "method": format!("{method:?}").to_lowercase(),
+                "dom_threshold": dom_threshold,
+                "align_grid": align_grid,
+                "width": out.width,
+                "height": out.height,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quantize_cmd(
+    input: &Path,
+    output: Option<&Path>,
+    colors: u32,
+    palette: Option<&str>,
+    reserve_color: Option<&str>,
+    reserve_tolerance: u8,
+    manifest: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let src = load_rgba(input)?;
+    let fixed_palette = match palette {
+        Some(spec) => parse_palette_arg(spec)?,
+        None => Vec::new(),
+    };
+    let reserve = reserve_color.map(parse_hex_color).transpose()?;
+
+    let opts = QuantizeRgbOptions {
+        max_colors: colors,
+        fixed_palette,
+        reserve_color: reserve,
+        reserve_tolerance,
+    };
+    let res = quantize_rgb(&src.data, src.width, src.height, &opts);
+    let dest = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| input.with_extension("quant.png"));
+    save_rgba(&res.image, &dest)?;
+    let palette_hex: Vec<String> = res.palette.iter().map(|c| to_hex(*c)).collect();
+    eprintln!(
+        "{} -> {} ({}x{}, {} colors)",
+        input.display(),
+        dest.display(),
+        res.image.width,
+        res.image.height,
+        palette_hex.len()
+    );
+    if let Some(m) = manifest {
+        update_manifest(
+            m,
+            "quantize",
+            json!({
+                "input": input.display().to_string(),
+                "output": dest.display().to_string(),
+                "colors": colors,
+                "palette": palette_hex,
+                "reserve_color": reserve.map(to_hex),
+                "reserve_tolerance": reserve_tolerance,
+                "width": res.image.width,
+                "height": res.image.height,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+fn parse_hex_color(s: &str) -> Result<[u8; 3], Box<dyn std::error::Error>> {
+    let hex = s.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("invalid hex color: {s:?} (expected #RRGGBB)").into());
+    }
+    Ok([
+        u8::from_str_radix(&hex[0..2], 16)?,
+        u8::from_str_radix(&hex[2..4], 16)?,
+        u8::from_str_radix(&hex[4..6], 16)?,
+    ])
+}
+
+fn to_hex(c: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+/// `--palette` accepts a comma-separated hex list or a path to a file with
+/// one hex color per line (blank lines and `//` comments ignored).
+fn parse_palette_arg(spec: &str) -> Result<Vec<[u8; 3]>, Box<dyn std::error::Error>> {
+    let text;
+    let entries: Vec<&str> = if Path::new(spec).is_file() {
+        text = std::fs::read_to_string(spec)?;
+        text.lines().collect()
+    } else {
+        spec.split(',').collect()
+    };
+    let mut palette = Vec::new();
+    for e in entries {
+        let e = e.trim();
+        if e.is_empty() || e.starts_with("//") {
+            continue;
+        }
+        palette.push(parse_hex_color(e)?);
+    }
+    if palette.is_empty() {
+        return Err(format!("--palette {spec:?} contains no colors").into());
+    }
+    Ok(palette)
+}
+
+/// Read-modify-write: merge `block` under `key` into an existing JSON
+/// manifest, or start a fresh one if the file is missing or invalid.
+fn update_manifest(
+    path: &Path,
+    key: &str,
+    block: Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut root = match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(map)) => Value::Object(map),
+            Ok(_) | Err(_) => {
+                eprintln!("manifest {} is not a JSON object; rewriting", path.display());
+                json!({})
+            }
+        },
+        Err(_) => json!({}),
+    };
+    root[key] = block;
+    std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
+    eprintln!("manifest: {} [{key}]", path.display());
     Ok(())
 }
 
