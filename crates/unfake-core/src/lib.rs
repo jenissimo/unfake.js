@@ -20,6 +20,6 @@ pub use detect::{
 pub use downscale::{downscale, DownscaleMethod, DownscaleOptions};
 pub use image::{encode_png, resize_area, RgbaImage};
 pub use morphology::morph_open_close;
-pub use quantize::{quantize, QuantizeResult};
+pub use quantize::{quantize, quantize_rgb, QuantizeResult, QuantizeRgbOptions, QuantizeRgbResult};
 pub use snap::{find_optimal_crop_offset, snap_to_grid, CropOffset};
 pub use vector::{vector_fill_background, vector_postprocess, vector_preprocess};
