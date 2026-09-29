@@ -14,10 +14,11 @@ pub mod vector;
 pub use color_count::{detect_optimal_color_count, ColorCountOpts};
 pub use content_adaptive::content_adaptive_downscale;
 pub use detect::{
-    acpeak_detect, auto_tiled_detect, runs_based_detect, single_region_edge_detect,
-    tiled_edge_detect, DetectMethod,
+    acpeak_detect, auto_tiled_detect, elastic_bounds, fractional_grid_detect, grid_for_scale,
+    runs_based_detect, single_region_edge_detect, tiled_edge_detect, AxisGrid, CellBounds,
+    DetectMethod, Grid,
 };
-pub use downscale::{downscale, DownscaleMethod, DownscaleOptions};
+pub use downscale::{downscale, downscale_bounds, downscale_grid, DownscaleMethod, DownscaleOptions};
 pub use image::{encode_png, resize_area, RgbaImage};
 pub use morphology::morph_open_close;
 pub use quantize::{quantize, quantize_rgb, QuantizeResult, QuantizeRgbOptions, QuantizeRgbResult};

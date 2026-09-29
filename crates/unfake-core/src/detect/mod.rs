@@ -2,10 +2,14 @@
 
 mod acpeak;
 mod edge;
+mod elastic;
+mod grid;
 mod runs;
 
 pub use acpeak::acpeak_detect;
 pub use edge::{single_region_edge_detect, tiled_edge_detect};
+pub use elastic::elastic_bounds;
+pub use grid::{fractional_grid_detect, grid_for_scale, AxisGrid, CellBounds, Grid};
 pub use runs::runs_based_detect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

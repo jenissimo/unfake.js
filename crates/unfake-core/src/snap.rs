@@ -2,7 +2,7 @@
 
 use crate::image::RgbaImage;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CropOffset {
     pub x: u32,
     pub y: u32,

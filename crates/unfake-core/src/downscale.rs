@@ -1,5 +1,6 @@
 //! Block downscale methods (parity with `browser-tool/lib/utils.js` + `pixel.js`).
 
+use crate::detect::{CellBounds, Grid};
 use crate::image::RgbaImage;
 use crate::math::{mean_u8, median_u8, mode_u8};
 use crate::snap::find_optimal_crop_offset;
@@ -71,39 +72,117 @@ pub fn downscale(
         }
     };
 
-    match opts.method {
-        DownscaleMethod::Dominant => downscale_dominant(&src, scale, opts.dom_threshold),
-        DownscaleMethod::Qvote => downscale_qvote(&src, scale),
-        _ => downscale_block(&src, scale, opts.method),
-    }
+    let xs = uniform_spans(src.width / scale, scale);
+    let ys = uniform_spans(src.height / scale, scale);
+    reduce_cells(&src, &xs, &ys, opts)
 }
 
-fn downscale_block(img: &RgbaImage, scale: u32, method: DownscaleMethod) -> RgbaImage {
-    let target_w = img.width / scale;
-    let target_h = img.height / scale;
-    if target_w == 0 || target_h == 0 {
+/// Downscale on a (possibly fractional) grid: one output pixel per cell whose
+/// center is inside the image, reduced over the cell's inner region so the
+/// resampling blur at cell borders doesn't vote. `opts.align_grid` is ignored —
+/// the grid carries its own phase.
+pub fn downscale_grid(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    grid: &Grid,
+    opts: &DownscaleOptions,
+) -> RgbaImage {
+    downscale_bounds(rgba, width, height, &grid.bounds(width, height), opts)
+}
+
+/// Downscale on explicit cell boundaries (a regular grid's, or an elastic fit
+/// from `elastic_bounds`); same inner-region sampling as `downscale_grid`.
+pub fn downscale_bounds(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    bounds: &CellBounds,
+    opts: &DownscaleOptions,
+) -> RgbaImage {
+    let src = RgbaImage {
+        data: rgba.to_vec(),
+        width,
+        height,
+    };
+    let xs = bound_spans(&bounds.x, width);
+    let ys = bound_spans(&bounds.y, height);
+    reduce_cells(&src, &xs, &ys, opts)
+}
+
+/// Source pixel range `[start, end)` reduced into one output pixel; `center`
+/// is what `Nearest` samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    start: usize,
+    end: usize,
+    center: usize,
+}
+
+fn uniform_spans(cells: u32, scale: u32) -> Vec<Span> {
+    let s = scale as usize;
+    (0..cells as usize)
+        .map(|t| Span {
+            start: t * s,
+            end: t * s + s,
+            center: t * s + s / 2,
+        })
+        .collect()
+}
+
+/// Inner region of each cell between consecutive boundaries: pixels whose
+/// centers are at least a quarter cell from the borders (at least the center
+/// pixel).
+fn bound_spans(bounds: &[f64], len: u32) -> Vec<Span> {
+    let n = len as i64;
+    bounds
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let p = b - a;
+            let margin = (0.25 * p).min(((p - 1.0) / 2.0).max(0.0));
+            let center = (((a + b) / 2.0).floor() as i64).clamp(0, n - 1);
+            let lo = ((a + margin - 0.5).ceil() as i64).max(0);
+            let hi = ((b - margin - 0.5).floor() as i64).min(n - 1);
+            let (start, end) = if hi >= lo { (lo, hi + 1) } else { (center, center + 1) };
+            Span {
+                start: start as usize,
+                end: end as usize,
+                center: center as usize,
+            }
+        })
+        .collect()
+}
+
+fn reduce_cells(img: &RgbaImage, xs: &[Span], ys: &[Span], opts: &DownscaleOptions) -> RgbaImage {
+    if xs.is_empty() || ys.is_empty() {
         return RgbaImage {
             data: vec![0, 0, 0, 0],
             width: 1,
             height: 1,
         };
     }
+    match opts.method {
+        DownscaleMethod::Dominant => downscale_dominant(img, xs, ys, opts.dom_threshold),
+        DownscaleMethod::Qvote => downscale_qvote(img, xs, ys),
+        _ => downscale_block(img, xs, ys, opts.method),
+    }
+}
 
-    let mut out = vec![0u8; (target_w * target_h * 4) as usize];
+fn downscale_block(img: &RgbaImage, xs: &[Span], ys: &[Span], method: DownscaleMethod) -> RgbaImage {
+    let target_w = xs.len();
+    let target_h = ys.len();
+    let mut out = vec![0u8; target_w * target_h * 4];
     let d = &img.data;
     let sw = img.width as usize;
 
-    for ty in 0..target_h {
-        for tx in 0..target_w {
-            let offset = ((ty * target_w + tx) * 4) as usize;
+    for (ty, row) in ys.iter().enumerate() {
+        for (tx, col) in xs.iter().enumerate() {
+            let offset = (ty * target_w + tx) * 4;
 
             if method == DownscaleMethod::Nearest {
-                let sx = (tx * scale + scale / 2) as usize;
-                let sy = (ty * scale + scale / 2) as usize;
-                if sx < img.width as usize && sy < img.height as usize {
-                    let idx = (sy * sw + sx) * 4;
-                    out[offset..offset + 4].copy_from_slice(&d[idx..idx + 4]);
-                }
+                let idx = (row.center * sw + col.center) * 4;
+                out[offset..offset + 4].copy_from_slice(&d[idx..idx + 4]);
                 continue;
             }
 
@@ -112,13 +191,8 @@ fn downscale_block(img: &RgbaImage, scale: u32, method: DownscaleMethod) -> Rgba
             let mut bs = Vec::new();
             let mut alphas = Vec::new();
 
-            for dy in 0..scale {
-                for dx in 0..scale {
-                    let sx = (tx * scale + dx) as usize;
-                    let sy = (ty * scale + dy) as usize;
-                    if sx >= img.width as usize || sy >= img.height as usize {
-                        continue;
-                    }
+            for sy in row.start..row.end {
+                for sx in col.start..col.end {
                     let idx = (sy * sw + sx) * 4;
                     alphas.push(d[idx + 3]);
                     if d[idx + 3] > 128 {
@@ -127,10 +201,6 @@ fn downscale_block(img: &RgbaImage, scale: u32, method: DownscaleMethod) -> Rgba
                         bs.push(d[idx + 2]);
                     }
                 }
-            }
-
-            if alphas.is_empty() {
-                continue;
             }
 
             let has_color = !rs.is_empty();
@@ -151,32 +221,27 @@ fn downscale_block(img: &RgbaImage, scale: u32, method: DownscaleMethod) -> Rgba
 
     RgbaImage {
         data: out,
-        width: target_w,
-        height: target_h,
+        width: target_w as u32,
+        height: target_h as u32,
     }
 }
 
-fn downscale_dominant(img: &RgbaImage, scale: u32, threshold: f64) -> RgbaImage {
-    let target_w = img.width / scale;
-    let target_h = img.height / scale;
-    let mut out = vec![0u8; (target_w * target_h * 4) as usize];
+fn downscale_dominant(img: &RgbaImage, xs: &[Span], ys: &[Span], threshold: f64) -> RgbaImage {
+    let target_w = xs.len();
+    let target_h = ys.len();
+    let mut out = vec![0u8; target_w * target_h * 4];
     let d = &img.data;
     let sw = img.width as usize;
 
-    for ty in 0..target_h {
-        for tx in 0..target_w {
+    for (ty, row) in ys.iter().enumerate() {
+        for (tx, col) in xs.iter().enumerate() {
             use std::collections::HashMap;
             let mut color_counts: HashMap<u32, u32> = HashMap::new();
             let mut alphas = Vec::new();
             let mut opaque_packed = Vec::new();
 
-            for dy in 0..scale {
-                for dx in 0..scale {
-                    let sx = (tx * scale + dx) as usize;
-                    let sy = (ty * scale + dy) as usize;
-                    if sx >= sw || sy >= img.height as usize {
-                        continue;
-                    }
+            for sy in row.start..row.end {
+                for sx in col.start..col.end {
                     let idx = (sy * sw + sx) * 4;
                     let a = d[idx + 3];
                     alphas.push(a);
@@ -189,7 +254,7 @@ fn downscale_dominant(img: &RgbaImage, scale: u32, threshold: f64) -> RgbaImage 
                 }
             }
 
-            let out_idx = ((ty * target_w + tx) * 4) as usize;
+            let out_idx = (ty * target_w + tx) * 4;
             if opaque_packed.is_empty() {
                 continue;
             }
@@ -222,19 +287,19 @@ fn downscale_dominant(img: &RgbaImage, scale: u32, threshold: f64) -> RgbaImage 
 
     RgbaImage {
         data: out,
-        width: target_w,
-        height: target_h,
+        width: target_w as u32,
+        height: target_h as u32,
     }
 }
 
-fn downscale_qvote(img: &RgbaImage, scale: u32) -> RgbaImage {
+fn downscale_qvote(img: &RgbaImage, xs: &[Span], ys: &[Span]) -> RgbaImage {
     let quantized = quantize_rgba(&img.data, img.width, img.height, 24);
     let qimg = RgbaImage {
         data: quantized,
         width: img.width,
         height: img.height,
     };
-    downscale_block(&qimg, scale, DownscaleMethod::Mode)
+    downscale_block(&qimg, xs, ys, DownscaleMethod::Mode)
 }
 
 fn quantize_rgba(rgba: &[u8], width: u32, height: u32, max_colors: u32) -> Vec<u8> {
