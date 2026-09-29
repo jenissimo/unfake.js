@@ -105,7 +105,7 @@ export async function ensureCoreWorker() {
   }
 }
 
-/** @returns {Promise<ImageData|number|{x:number,y:number}>} */
+/** @returns {Promise<ImageData|number|{x:number,y:number}|object|null>} */
 export async function runCoreOp(op, payload = {}) {
   const ok = await ensureCoreWorker();
   if (!ok) throw new Error('unfake-core unavailable');
@@ -131,6 +131,8 @@ export async function runCoreOp(op, payload = {}) {
   if (result?.type === 'image') return payloadToImageData(result);
   if (result?.type === 'number') return result.value;
   if (result?.type === 'offset') return { x: result.x, y: result.y };
+  if (result?.type === 'grid') return result.grid;
+  if (result?.type === 'bounds') return result.bounds;
   if (result?.type === 'bytes') return new Uint8Array(result.buffer);
   if (result?.type === 'quantize') {
     return {

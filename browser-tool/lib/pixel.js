@@ -230,6 +230,7 @@ export async function processImage({
     fixedPalette = null,
     alphaThreshold = 128,
     snapGrid = true,
+    elasticGrid = true,
     useCvFreeSnap = true,
 }) {
     if (!file) throw new Error('No file provided.');
@@ -250,6 +251,10 @@ export async function processImage({
 
     // 2. Scale Detection
     let scale = 1;
+    // Fractional cell grid {periodX, periodY, offsetX, offsetY, cellsX, cellsY}:
+    // newer models resample an N-cell canvas to e.g. 2048 px (10.24 px/cell),
+    // which no integer scale + snap can follow without drifting.
+    let grid = null;
     let gridPhase = { x: 0, y: 0 };
     let effectiveDownscaleMethod = downscaleMethod;
     let effectiveDomThreshold = domMeanThreshold;
@@ -257,6 +262,9 @@ export async function processImage({
     if (manualScale) {
         scale = Math.max(1, Array.isArray(manualScale) ? manualScale[0] : manualScale);
         logger.log(`Using manual scale: ${scale}`);
+        if (!Number.isInteger(scale) && await ensureCoreWorker()) {
+            grid = await runCoreOp('gridForScale', { image: current, scale });
+        }
     } else {
         const detectionFn = {
             'runs': runsBasedDetect,
@@ -280,13 +288,46 @@ export async function processImage({
 
         const heuristicScale = await detectionFn(originalForAdaptiveScale);
         scale = heuristicScale;
+
+        if (await ensureCoreWorker()) {
+            grid = await runCoreOp('detectGrid', { image: originalForAdaptiveScale });
+            if (grid) {
+                scale = (grid.periodX + grid.periodY) / 2;
+                logger.log(
+                    `Fractional grid: ${grid.periodX.toFixed(4)} x ${grid.periodY.toFixed(4)} px/cell ` +
+                    `(${grid.cellsX}x${grid.cellsY} cells; integer detector said ${heuristicScale}).`
+                );
+            }
+        }
+    }
+    if (!grid && !Number.isInteger(scale)) {
+        scale = Math.max(1, Math.round(scale));
+    }
+
+    // 2.4. Elastic grid: hand-drawn pixel art jitters its cells around the
+    // scale (40..49 px columns at 43), so a fixed grid drifts half a cell
+    // somewhere and doubles or drops a pixel. Where fitting the boundaries to
+    // the drawn edges captures clearly more of them, sample those cells instead.
+    let bounds = null;
+    if (elasticGrid && scale >= 8 && await ensureCoreWorker()) {
+        let base = grid;
+        if (!base) {
+            const off = await runCoreOp('cropOffset', { image: current, scale });
+            base = { periodX: scale, periodY: scale, offsetX: off.x, offsetY: off.y };
+        }
+        bounds = await runCoreOp('elasticBounds', { image: current, grid: base });
+        if (bounds) {
+            const axes = ['x', 'y'].filter((_, i) => bounds.adapted[i]).join(' and ');
+            logger.log(`Elastic grid on ${axes}: ${bounds.cellsX}x${bounds.cellsY} cells.`);
+        }
     }
     if (scale <= 1 && downscaleMethod !== 'content-adaptive') {
         logger.log('Scale is 1, skipping downscale and grid snapping.');
     }
 
-    // 2.5. Snap to Grid (cv-free or OpenCV Sobel crop alignment)
-    if (snapGrid && scale > 1) {
+    // 2.5. Snap to Grid (cv-free or OpenCV Sobel crop alignment).
+    // A fractional grid carries its own phase — cells are sampled in place.
+    if (snapGrid && scale > 1 && !grid && !bounds) {
         logger.log('Snapping to grid via auto-crop...');
         if (await ensureCoreWorker()) {
             const autoCrop = await runCoreOp('cropOffset', { image: current, scale });
@@ -356,7 +397,24 @@ export async function processImage({
     if (scale > 1) {
         logger.log(`Downscaling by ${scale}x using '${effectiveDownscaleMethod}' method.`);
         const useCoreDs = await ensureCoreWorker();
-        if (effectiveDownscaleMethod === 'dominant') {
+        if (bounds && effectiveDownscaleMethod !== 'content-adaptive') {
+            current = await runCoreOp('downscaleBounds', {
+                image: current,
+                bounds,
+                method: CORE_DS[effectiveDownscaleMethod] ?? CORE_DS.median,
+                domThreshold: effectiveDomThreshold,
+            });
+            quantizeAfter = effectiveDownscaleMethod !== 'dominant';
+        } else if (grid && effectiveDownscaleMethod !== 'content-adaptive') {
+            const coreMethod = CORE_DS[effectiveDownscaleMethod] ?? CORE_DS.median;
+            current = await runCoreOp('downscaleGrid', {
+                image: current,
+                grid,
+                method: coreMethod,
+                domThreshold: effectiveDomThreshold,
+            });
+            quantizeAfter = effectiveDownscaleMethod !== 'dominant';
+        } else if (effectiveDownscaleMethod === 'dominant') {
             current = useCoreDs
                 ? await coreDownscale(current, scale, CORE_DS.dominant, effectiveDomThreshold)
                 : downscaleByDominantColor(current, scale, effectiveDomThreshold);
@@ -372,8 +430,9 @@ export async function processImage({
             }
             quantizeAfter = true;
         } else if (effectiveDownscaleMethod === 'content-adaptive') {
-            const targetW = Math.floor(originalSize[0] / scale);
-            const targetH = Math.floor(originalSize[1] / scale);
+            const cells = bounds ?? grid;
+            const targetW = cells ? cells.cellsX : Math.floor(originalSize[0] / scale);
+            const targetH = cells ? cells.cellsY : Math.floor(originalSize[1] / scale);
             current = await runCoreOp('contentAdaptive', { image: originalForAdaptiveScale, targetW, targetH });
             quantizeAfter = true;
         } else if (['median', 'mode', 'mean', 'nearest'].includes(effectiveDownscaleMethod)) {
@@ -430,6 +489,15 @@ export async function processImage({
                 edge_method: manualScale ? null : detectMethod === 'edge' || detectMethod === 'auto' ? edgeDetectMethod : null,
                 detected_scale: scale,
                 manual_scale: manualScale,
+                grid: grid && {
+                    period: [grid.periodX, grid.periodY],
+                    offset: [grid.offsetX, grid.offsetY],
+                    cells: [grid.cellsX, grid.cellsY],
+                },
+                elastic: bounds && {
+                    adapted: bounds.adapted,
+                    cells: [bounds.cellsX, bounds.cellsY],
+                },
             },
             color_quantization: {
                 max_colors: maxColors,
@@ -453,7 +521,7 @@ export async function processImage({
             },
             grid_snapping: {
                 enabled: snapGrid,
-                applied: snapGrid && scale > 1,
+                applied: snapGrid && scale > 1 && !grid && !bounds,
                 cvfree: useCvFreeSnap,
                 phase: gridPhase,
             }

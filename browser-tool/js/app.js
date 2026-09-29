@@ -254,6 +254,7 @@ async function initializeTweakpane() {
         maxColors: 16,
         autoColorCount: false,
         snapGrid: true,
+        elasticGrid: true,
         gridDetectionAlgorithm: 'edge-tiled', // 'edge-tiled' (default), 'edge-legacy', 'auto-tiled', 'auto-legacy'
         downscaleMethod: 'dominant',
         domMeanThreshold: 0.15,
@@ -331,6 +332,11 @@ async function initializeTweakpane() {
     
     mainPixelFolder.addBinding(settings, 'snapGrid', {
         label: 'Snap to Grid'
+    });
+
+    // Fits cell boundaries to hand-drawn pixels whose size jitters around the scale.
+    mainPixelFolder.addBinding(settings, 'elasticGrid', {
+        label: 'Elastic Grid'
     });
 
     mainPixelFolder.addBinding(settings, 'downscaleMethod', {
@@ -1313,6 +1319,7 @@ function buildPixelArtOptions(settings) {
         maxColors: settings.maxColors,
         autoColorCount: settings.autoColorCount,
         snapGrid: settings.snapGrid,
+        elasticGrid: settings.elasticGrid,
         detectMethod,
         edgeDetectMethod: edgeDetectMethod || 'tiled',
         downscaleMethod: settings.downscaleMethod,
@@ -1491,11 +1498,13 @@ function displayPixelArtResult(result) {
             const scaleDetection = result.manifest.processing_steps.scale_detection;
             pixelSize = scaleDetection.detected_scale || 1;
             console.log('Using pixel size from manifest:', pixelSize);
-            
+            // Fractional grids (e.g. 10.24 px/cell) print with 2 decimals.
+            const sizeLabel = Number.isInteger(pixelSize) ? pixelSize : pixelSize.toFixed(2);
+
             if (scaleDetection.manual_scale) {
-                pixelSizeInfo = `Manual pixel size: ${pixelSize}×${pixelSize}px`;
+                pixelSizeInfo = `Manual pixel size: ${sizeLabel}×${sizeLabel}px`;
             } else {
-                pixelSizeInfo = `Detected pixel size: ${pixelSize}×${pixelSize}px`;
+                pixelSizeInfo = `Detected pixel size: ${sizeLabel}×${sizeLabel}px`;
             }
         } else if (window.appSettings && !window.appSettings.autoPixelSize) {
             pixelSize = window.appSettings.pixelSize;
@@ -1939,6 +1948,8 @@ function downloadPixelArt(scaled = false) {
         if (processed.manifest.processing_steps && processed.manifest.processing_steps.scale_detection) {
             pixelSize = processed.manifest.processing_steps.scale_detection.detected_scale || 1;
         }
+        // Pixel-perfect export needs a whole factor (a fractional grid gives e.g. 10.24).
+        pixelSize = Math.max(1, Math.round(pixelSize));
 
         const scaledCanvas = document.createElement('canvas');
         const scaledCtx = scaledCanvas.getContext('2d');
@@ -2150,6 +2161,7 @@ function savePreset(name) {
             maxColors: currentSettings.maxColors,
             autoColorCount: currentSettings.autoColorCount,
             snapGrid: currentSettings.snapGrid,
+            elasticGrid: currentSettings.elasticGrid,
             gridDetectionAlgorithm: currentSettings.gridDetectionAlgorithm,
             downscaleMethod: currentSettings.downscaleMethod,
             domMeanThreshold: currentSettings.domMeanThreshold,
@@ -2286,6 +2298,7 @@ function resetToDefaultSettings() {
         maxColors: 16,
         autoColorCount: false,
         snapGrid: true,
+        elasticGrid: true,
         gridDetectionAlgorithm: 'edge-tiled',
         downscaleMethod: 'dominant',
         domMeanThreshold: 0.15,

@@ -64,6 +64,23 @@ export function detect_color_count(rgba, width, height, downsample_to, quantize,
 }
 
 /**
+ * Fractional (non-integer) cell grid, or empty when the integer detectors
+ * apply. Out: [period_x, period_y, offset_x, offset_y, cells_x, cells_y].
+ * @param {Uint8Array} rgba
+ * @param {number} width
+ * @param {number} height
+ * @returns {Float64Array}
+ */
+export function detect_grid(rgba, width, height) {
+    const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.detect_grid(ptr0, len0, width, height);
+    var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v2;
+}
+
+/**
  * @param {Uint8Array} rgba
  * @param {number} width
  * @param {number} height
@@ -103,6 +120,54 @@ export function detect_tiled(rgba, width, height) {
 }
 
 /**
+ * Downscale on explicit cell boundaries (from `elastic_bounds_vec`).
+ * method ids as `downscale_rgba_packed`. Packed image out.
+ * @param {Uint8Array} rgba
+ * @param {number} width
+ * @param {number} height
+ * @param {Float64Array} bounds_x
+ * @param {Float64Array} bounds_y
+ * @param {number} method
+ * @param {number} dom_threshold
+ * @returns {Uint8Array}
+ */
+export function downscale_bounds_packed(rgba, width, height, bounds_x, bounds_y, method, dom_threshold) {
+    const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(bounds_x, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(bounds_y, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.downscale_bounds_packed(ptr0, len0, width, height, ptr1, len1, ptr2, len2, method, dom_threshold);
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
+
+/**
+ * Downscale on a fractional grid (from `detect_grid` / `grid_for_scale_vec`).
+ * method ids as `downscale_rgba_packed`. Packed image out.
+ * @param {Uint8Array} rgba
+ * @param {number} width
+ * @param {number} height
+ * @param {number} period_x
+ * @param {number} period_y
+ * @param {number} offset_x
+ * @param {number} offset_y
+ * @param {number} method
+ * @param {number} dom_threshold
+ * @returns {Uint8Array}
+ */
+export function downscale_grid_packed(rgba, width, height, period_x, period_y, offset_x, offset_y, method, dom_threshold) {
+    const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.downscale_grid_packed(ptr0, len0, width, height, period_x, period_y, offset_x, offset_y, method, dom_threshold);
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
  * method: 0=nearest 1=median 2=mode 3=dominant 4=qvote 5=mean
  * align_grid: 1 = crop to grid before downscale (CLI); 0 = image already snapped (browser pipeline)
  * @param {Uint8Array} rgba
@@ -124,6 +189,28 @@ export function downscale_rgba_packed(rgba, width, height, scale, method, dom_th
 }
 
 /**
+ * Boundaries fitted to hand-drawn cells around a grid (from `detect_grid`, or
+ * an integer scale with its crop offset), or empty when the grid already fits.
+ * Out: [adapted_x, adapted_y, len_x, x bounds…, y bounds…].
+ * @param {Uint8Array} rgba
+ * @param {number} width
+ * @param {number} height
+ * @param {number} period_x
+ * @param {number} period_y
+ * @param {number} offset_x
+ * @param {number} offset_y
+ * @returns {Float64Array}
+ */
+export function elastic_bounds_vec(rgba, width, height, period_x, period_y, offset_x, offset_y) {
+    const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.elastic_bounds_vec(ptr0, len0, width, height, period_x, period_y, offset_x, offset_y);
+    var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v2;
+}
+
+/**
  * Encode RGBA8 to PNG bytes.
  * @param {Uint8Array} rgba
  * @param {number} width
@@ -136,6 +223,23 @@ export function encode_png_bytes(rgba, width, height) {
     const ret = wasm.encode_png_bytes(ptr0, len0, width, height);
     var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
+ * Grid for a manual (possibly fractional) cell size; layout as `detect_grid`.
+ * @param {Uint8Array} rgba
+ * @param {number} width
+ * @param {number} height
+ * @param {number} scale
+ * @returns {Float64Array}
+ */
+export function grid_for_scale_vec(rgba, width, height, scale) {
+    const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.grid_for_scale_vec(ptr0, len0, width, height, scale);
+    var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v2;
 }
 
@@ -269,6 +373,11 @@ function __wbg_get_imports() {
     };
 }
 
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
 function getArrayU32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
@@ -277,6 +386,14 @@ function getArrayU32FromWasm0(ptr, len) {
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
+let cachedFloat64ArrayMemory0 = null;
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+    }
+    return cachedFloat64ArrayMemory0;
 }
 
 let cachedUint32ArrayMemory0 = null;
@@ -302,6 +419,13 @@ function passArray8ToWasm0(arg, malloc) {
     return ptr;
 }
 
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 let WASM_VECTOR_LEN = 0;
 
 let wasmModule, wasmInstance, wasm;
@@ -309,6 +433,7 @@ function __wbg_finalize_init(instance, module) {
     wasmInstance = instance;
     wasm = instance.exports;
     wasmModule = module;
+    cachedFloat64ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();

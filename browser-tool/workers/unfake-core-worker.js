@@ -7,8 +7,13 @@ import init, {
   detect_runs,
   detect_auto,
   crop_offset,
+  detect_grid,
+  grid_for_scale_vec,
+  elastic_bounds_vec,
   snap_rgba_packed,
   downscale_rgba_packed,
+  downscale_grid_packed,
+  downscale_bounds_packed,
   morph_cleanup_packed,
   detect_color_count,
   content_adaptive_packed,
@@ -24,6 +29,12 @@ let ready = false;
 
 function rgbaView(image) {
   return new Uint8Array(image.buffer, 0, image.width * image.height * 4);
+}
+
+/** [periodX, periodY, offsetX, offsetY, cellsX, cellsY] → object, empty → null. */
+function gridFromVec(v) {
+  if (!v || v.length < 6) return null;
+  return { periodX: v[0], periodY: v[1], offsetX: v[2], offsetY: v[3], cellsX: v[4], cellsY: v[5] };
 }
 
 const OPS = {
@@ -49,6 +60,29 @@ const OPS = {
     return {
       type: 'number',
       value: detect_auto(rgbaView(image), image.width, image.height),
+    };
+  },
+  detectGrid({ image }) {
+    return { type: 'grid', grid: gridFromVec(detect_grid(rgbaView(image), image.width, image.height)) };
+  },
+  gridForScale({ image, scale }) {
+    return {
+      type: 'grid',
+      grid: gridFromVec(grid_for_scale_vec(rgbaView(image), image.width, image.height, scale)),
+    };
+  },
+  elasticBounds({ image, grid }) {
+    const v = elastic_bounds_vec(
+      rgbaView(image), image.width, image.height,
+      grid.periodX, grid.periodY, grid.offsetX, grid.offsetY,
+    );
+    if (!v || v.length < 3) return { type: 'bounds', bounds: null };
+    const nx = v[2];
+    const x = Array.from(v.subarray(3, 3 + nx));
+    const y = Array.from(v.subarray(3 + nx));
+    return {
+      type: 'bounds',
+      bounds: { x, y, adapted: [v[0] === 1, v[1] === 1], cellsX: x.length - 1, cellsY: y.length - 1 },
     };
   },
   cropOffset({ image, scale }) {
@@ -137,6 +171,34 @@ const OPS = {
       method,
       domThreshold ?? 0.15,
       alignGrid ? 1 : 0,
+    );
+    const img = unpackCoreImage(packed);
+    return { type: 'image', width: img.width, height: img.height, buffer: img.buffer };
+  },
+  downscaleBounds({ image, bounds, method, domThreshold }) {
+    const packed = downscale_bounds_packed(
+      rgbaView(image),
+      image.width,
+      image.height,
+      Float64Array.from(bounds.x),
+      Float64Array.from(bounds.y),
+      method,
+      domThreshold ?? 0.15,
+    );
+    const img = unpackCoreImage(packed);
+    return { type: 'image', width: img.width, height: img.height, buffer: img.buffer };
+  },
+  downscaleGrid({ image, grid, method, domThreshold }) {
+    const packed = downscale_grid_packed(
+      rgbaView(image),
+      image.width,
+      image.height,
+      grid.periodX,
+      grid.periodY,
+      grid.offsetX,
+      grid.offsetY,
+      method,
+      domThreshold ?? 0.15,
     );
     const img = unpackCoreImage(packed);
     return { type: 'image', width: img.width, height: img.height, buffer: img.buffer };
