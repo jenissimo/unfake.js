@@ -4,8 +4,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use image::ImageEncoder;
 use serde_json::{json, Value};
 use unfake_core::{
-    downscale, find_optimal_crop_offset, quantize_rgb, snap_to_grid, DetectMethod,
-    DownscaleMethod, DownscaleOptions, QuantizeRgbOptions, RgbaImage,
+    downscale, downscale_bounds, downscale_grid, elastic_bounds, find_optimal_crop_offset,
+    fractional_grid_detect, grid_for_scale, quantize_rgb, snap_to_grid, DetectMethod,
+    DownscaleMethod, DownscaleOptions, Grid, QuantizeRgbOptions, RgbaImage,
 };
 
 #[derive(Parser)]
@@ -17,11 +18,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Detect pixel grid scale
+    /// Detect pixel grid scale (fractional, e.g. 10.24, for resampled grids)
     Detect {
         input: PathBuf,
         #[arg(short, long, value_enum, default_value_t = DetectArg::Tiled)]
         method: DetectArg,
+        /// Report only the integer scale (skip fractional grid detection)
+        #[arg(long)]
+        integer: bool,
         /// Write/update a JSON manifest with the detected scale
         #[arg(long)]
         manifest: Option<PathBuf>,
@@ -42,14 +46,18 @@ enum Commands {
         input: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Cell size in px; non-integer (e.g. 10.24) samples a fractional grid
         #[arg(short, long)]
-        scale: u32,
+        scale: f64,
         #[arg(short, long, value_enum, default_value_t = DsArg::Dominant)]
         method: DsArg,
         #[arg(long, default_value_t = 0.15)]
         dom_threshold: f64,
         #[arg(long)]
         no_align: bool,
+        /// Keep a fixed grid even where hand-drawn cells jitter around the scale
+        #[arg(long)]
+        no_elastic: bool,
         /// Write/update a JSON manifest with output dimensions
         #[arg(long)]
         manifest: Option<PathBuf>,
@@ -132,8 +140,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Detect {
             input,
             method,
+            integer,
             manifest,
-        } => detect_cmd(&input, method.into(), manifest.as_deref()),
+        } => detect_cmd(&input, method.into(), integer, manifest.as_deref()),
         Commands::Snap {
             input,
             output,
@@ -147,6 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             method,
             dom_threshold,
             no_align,
+            no_elastic,
             manifest,
         } => downscale_cmd(
             &input,
@@ -155,6 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             method.into(),
             dom_threshold,
             !no_align,
+            !no_elastic,
             manifest.as_deref(),
         ),
         Commands::Quantize {
@@ -197,8 +208,18 @@ fn save_rgba(img: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::Err
 fn detect_cmd(
     input: &Path,
     method: DetectMethod,
+    integer_only: bool,
     manifest: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let detect = |img: &RgbaImage| -> (u32, Option<Grid>) {
+        let scale = method.detect(&img.data, img.width, img.height);
+        let grid = if integer_only {
+            None
+        } else {
+            fractional_grid_detect(&img.data, img.width, img.height)
+        };
+        (scale, grid)
+    };
     if input.is_dir() {
         if manifest.is_some() {
             eprintln!("--manifest is ignored for directory input");
@@ -207,29 +228,58 @@ fn detect_cmd(
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) == Some("png") {
                 let img = load_rgba(&path)?;
-                let scale = method.detect(&img.data, img.width, img.height);
-                println!("{}  scale={}", path.display(), scale);
+                match detect(&img) {
+                    (_, Some(g)) => {
+                        let (cw, ch) = g.cells(img.width, img.height);
+                        println!(
+                            "{}  scale={} ({cw}x{ch} cells)",
+                            path.display(),
+                            fmt_scale(g.scale())
+                        );
+                    }
+                    (scale, None) => println!("{}  scale={}", path.display(), scale),
+                }
             }
         }
     } else {
         let img = load_rgba(input)?;
-        let scale = method.detect(&img.data, img.width, img.height);
-        println!("{scale}");
+        let (scale, grid) = detect(&img);
+        let mut block = json!({
+            "input": input.display().to_string(),
+            "method": format!("{method:?}").to_lowercase(),
+            "scale": scale,
+            "width": img.width,
+            "height": img.height,
+        });
+        if let Some(g) = grid {
+            println!("{}", fmt_scale(g.scale()));
+            block["scale"] = json!(g.scale());
+            block["integer_scale"] = json!(scale);
+            block["grid"] = grid_json(&g, img.width, img.height);
+        } else {
+            println!("{scale}");
+        }
         if let Some(m) = manifest {
-            update_manifest(
-                m,
-                "detect",
-                json!({
-                    "input": input.display().to_string(),
-                    "method": format!("{method:?}").to_lowercase(),
-                    "scale": scale,
-                    "width": img.width,
-                    "height": img.height,
-                }),
-            )?;
+            update_manifest(m, "detect", block)?;
         }
     }
     Ok(())
+}
+
+/// Up to 4 decimals, trailing zeros trimmed ("10.24", "6.7308").
+fn fmt_scale(v: f64) -> String {
+    let s = format!("{v:.4}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn grid_json(g: &Grid, width: u32, height: u32) -> Value {
+    let (cw, ch) = g.cells(width, height);
+    json!({
+        "period": [g.x.period, g.y.period],
+        "offset": [g.x.offset, g.y.offset],
+        "coherence": [g.x.coherence, g.y.coherence],
+        "cells": [cw, ch],
+    })
 }
 
 fn snap_cmd(
@@ -269,27 +319,49 @@ fn snap_cmd(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn downscale_cmd(
     input: &Path,
     output: Option<&Path>,
-    scale: u32,
+    scale: f64,
     method: DownscaleMethod,
     dom_threshold: f64,
     align_grid: bool,
+    elastic: bool,
     manifest: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if scale.is_nan() || scale < 1.0 {
+        return Err(format!("--scale must be >= 1 (got {scale})").into());
+    }
     let src = load_rgba(input)?;
-    let out = downscale(
-        &src.data,
-        src.width,
-        src.height,
-        scale,
-        &DownscaleOptions {
-            method,
-            dom_threshold,
-            align_grid,
-        },
-    );
+    let opts = DownscaleOptions {
+        method,
+        dom_threshold,
+        align_grid,
+    };
+    let grid =
+        (scale.fract() != 0.0).then(|| grid_for_scale(&src.data, src.width, src.height, scale));
+    // Hand-drawn cells jitter around the scale: fit the boundaries to the edges
+    // on the axes where a fixed grid drifts.
+    let fitted = if elastic && scale >= 2.0 {
+        let base = grid.unwrap_or_else(|| {
+            let s = scale as u32;
+            let off = if align_grid {
+                find_optimal_crop_offset(&src.data, src.width, src.height, s)
+            } else {
+                Default::default()
+            };
+            Grid::integer(s, off.x, off.y)
+        });
+        elastic_bounds(&src.data, src.width, src.height, &base)
+    } else {
+        None
+    };
+    let out = match (&fitted, &grid) {
+        (Some((bounds, _)), _) => downscale_bounds(&src.data, src.width, src.height, bounds, &opts),
+        (None, Some(g)) => downscale_grid(&src.data, src.width, src.height, g, &opts),
+        (None, None) => downscale(&src.data, src.width, src.height, scale as u32, &opts),
+    };
     let dest = output
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| input.with_extension("down.png"));
@@ -302,20 +374,23 @@ fn downscale_cmd(
         out.height
     );
     if let Some(m) = manifest {
-        update_manifest(
-            m,
-            "downscale",
-            json!({
-                "input": input.display().to_string(),
-                "output": dest.display().to_string(),
-                "scale": scale,
-                "method": format!("{method:?}").to_lowercase(),
-                "dom_threshold": dom_threshold,
-                "align_grid": align_grid,
-                "width": out.width,
-                "height": out.height,
-            }),
-        )?;
+        let mut block = json!({
+            "input": input.display().to_string(),
+            "output": dest.display().to_string(),
+            "scale": scale,
+            "method": format!("{method:?}").to_lowercase(),
+            "dom_threshold": dom_threshold,
+            "align_grid": align_grid,
+            "width": out.width,
+            "height": out.height,
+        });
+        if let Some(g) = &grid {
+            block["grid"] = grid_json(g, src.width, src.height);
+        }
+        if let Some((_, adapted)) = &fitted {
+            block["elastic"] = json!(adapted);
+        }
+        update_manifest(m, "downscale", block)?;
     }
     Ok(())
 }
