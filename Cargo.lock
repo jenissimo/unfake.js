@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "unfake-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "image",
@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "unfake-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "imagequant",
  "png 0.17.16",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "unfake-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "unfake-core",
  "wasm-bindgen",
